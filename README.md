@@ -1,36 +1,49 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# GhostFlow AI
 
-## Getting Started
+### Preserving Human Expertise Through Workflow Intelligence
 
-First, run the development server:
+GhostFlow AI adalah platform AI workflow intelligence yang dirancang untuk menangkap, mempelajari, dan mewariskan pola kerja serta cara berpikir seorang expert kepada developer berikutnya. Sistem ini berfokus pada bagaimana knowledge profesional tetap hidup meskipun senior engineer, expert, atau anggota inti sudah tidak lagi berada di dalam tim. 🧠
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+Di banyak perusahaan modern, knowledge penting masih tersimpan di dalam kepala manusia, bukan di dalam sistem. Ketika seorang expert resign, pindah divisi, atau keluar dari perusahaan, proses kerja sering menjadi lambat karena workflow, troubleshooting pattern, dan decision-making knowledge ikut hilang. GhostFlow AI hadir untuk membantu menjaga operational knowledge agar tetap dapat digunakan oleh generasi developer berikutnya.
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+GhostFlow AI bekerja dengan pendekatan contextual workflow observation. Saat work session aktif, sistem secara ringan mengamati metadata aktivitas profesional seperti Git activity, debugging flow, terminal event, documentation navigation, architecture changes, dan workflow switching antar tools seperti VSCode, browser documentation, maupun software desain. Sistem tidak merekam seluruh aktivitas pribadi pengguna, tetapi hanya mempelajari pola kerja profesional yang relevan. ⚙️
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Data workflow tersebut kemudian diproses menjadi semantic workflow graph yang merepresentasikan urutan berpikir, reasoning path, serta pola penyelesaian masalah seorang expert. AI membangun operational knowledge memory yang nantinya dapat digunakan kembali untuk membantu developer baru memahami bagaimana seorang expert biasanya mengambil keputusan dalam situasi tertentu.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Ketika developer baru mengalami kondisi yang menunjukkan kemungkinan stuck, seperti repetitive debugging, build failure berulang, atau workflow confusion, GhostFlow AI akan memberikan contextual guidance berdasarkan workflow dan reasoning pattern yang sebelumnya digunakan oleh expert pada kasus serupa. Sistem ini bukan chatbot biasa, melainkan workflow intelligence layer yang bertindak sebagai “digital presence” dari pengalaman seorang expert.
 
-## Learn More
+Project ini dikembangkan sebagai visi masa depan transfer expertise manusia ke dalam sistem AI operasional yang dapat membantu onboarding, meningkatkan produktivitas tim, mengurangi ketergantungan pada satu individu, dan menjaga knowledge perusahaan tetap hidup secara berkelanjutan.
 
-To learn more about Next.js, take a look at the following resources:
+---
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Core Features
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- Workflow Intelligence Capture
+- Semantic Workflow Graph
+- Expert Decision Mapping
+- Contextual Guidance System
+- Workflow Replay Engine
+- Operational Knowledge Memory
+- Reasoning Pattern Analysis
+- Debugging Flow Detection
+- Git & Development Activity Analysis
+- AI-Powered Expert Inheritance
 
-## Deploy on Vercel
+---
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Technology Direction
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- React / Next.js
+- Tauri Desktop Application
+- Gemini API
+- Workflow Intelligence Engine
+- Git Activity Processing
+- Contextual Trigger System
+- Semantic Event Processing
+- AI Reasoning Layer
+
+---
+
+## Vision
+
+GhostFlow AI bertujuan membangun masa depan di mana cara berpikir dan workflow seorang expert tidak lagi hilang bersama individu tersebut, tetapi dapat diwariskan sebagai operational intelligence yang terus hidup di dalam tim, perusahaan, dan ekosistem kerja digital.
