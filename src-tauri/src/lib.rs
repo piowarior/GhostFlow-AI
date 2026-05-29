@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use uuid::Uuid;
+use std::path::{Path, PathBuf};
 
 // ── Data Structures ──
 
@@ -101,7 +102,7 @@ impl TelemetryEngine {
             return;
         }
 
-        // Reset state
+        // Reset buffer and prepare recording
         {
             let mut acts = self.activities.lock().unwrap();
             acts.clear();
@@ -112,11 +113,11 @@ impl TelemetryEngine {
         }
         {
             let mut m = self.recording_mode.lock().unwrap();
-            *m = mode;
+            *m = mode.clone();
         }
         {
             let mut pd = self.project_dir.lock().unwrap();
-            *pd = project_dir;
+            *pd = project_dir.clone();
         }
         {
             let mut apps = self.unique_apps.lock().unwrap();
@@ -141,11 +142,11 @@ impl TelemetryEngine {
         let cognitive = self.cognitive.clone();
 
         let handle = thread::spawn(move || {
+            let mut last_scan_time = Utc::now();
+            let mut tick_count: u64 = 0;
             let mut prev_window_title = String::new();
             let mut prev_app_class = String::new();
             let mut focus_start = Utc::now();
-            let mut tick_count: u64 = 0;
-            let mut recent_switches: Vec<DateTime<Utc>> = Vec::new();
 
             while is_rec.load(Ordering::Relaxed) {
                 thread::sleep(Duration::from_secs(2));
@@ -154,109 +155,157 @@ impl TelemetryEngine {
                 }
 
                 tick_count += 1;
-
-                // Get active window info via xprop
-                let (wm_name, wm_class) = get_active_window_info();
-
-                if wm_name.is_empty() && wm_class.is_empty() {
-                    continue;
-                }
-
-                let app_class = classify_app(&wm_class, &wm_name);
                 let now = Utc::now();
+                let project_path = proj_dir.lock().unwrap().clone();
 
-                // Track unique apps
-                {
-                    let mut apps = unique_apps.lock().unwrap();
-                    if !apps.contains(&app_class) {
-                        apps.push(app_class.clone());
-                    }
-                }
-
-                // Detect focus change
-                if wm_name != prev_window_title || app_class != prev_app_class {
-                    let duration = (now - focus_start).num_milliseconds().max(0) as u64;
-
-                    // Only record if previous window had meaningful duration
-                    if !prev_window_title.is_empty() && duration > 500 {
-                        let layout = detect_layout(&app_class);
-                        let activity = ActivityRecord {
-                            activity_id: format!("act-{}", Uuid::new_v4().to_string().split('-').next().unwrap_or("x")),
-                            timestamp: now.to_rfc3339(),
-                            activity_type: classify_activity_type(&app_class, &prev_window_title),
-                            app_class: prev_app_class.clone(),
-                            window_title: prev_window_title.clone(),
-                            layout_state: layout,
-                            duration_ms: duration,
-                            details: build_details(&prev_app_class, &prev_window_title),
-                        };
-
+                // 1. SCAN DYNAMIC FILE SYSTEM MODIFICATIONS (VS CODE / CODING STATE)
+                if !project_path.is_empty() {
+                    let path = Path::new(&project_path);
+                    let modified_files = scan_recent_modified_files(path, last_scan_time, 4);
+                    if !modified_files.is_empty() {
                         let mut acts = activities.lock().unwrap();
-                        acts.push(activity);
-                    }
+                        let mut apps_list = unique_apps.lock().unwrap();
+                        
+                        if !apps_list.contains(&"VS Code".to_string()) {
+                            apps_list.push("VS Code".to_string());
+                        }
 
-                    // Cognitive: detect fast file switching
-                    if app_class == "VS Code" && prev_app_class == "VS Code" {
-                        recent_switches.push(now);
-                        recent_switches.retain(|t| (now - *t).num_seconds() < 15);
-                        if recent_switches.len() > 3 {
-                            let mut cog = cognitive.lock().unwrap();
-                            cog.fast_file_switch_count += 1;
-                            recent_switches.clear();
+                        for (filepath, _mtime) in modified_files {
+                            let filename = Path::new(&filepath)
+                                .file_name()
+                                .map(|f| f.to_string_lossy().to_string())
+                                .unwrap_or_else(|| filepath.clone());
+                            
+                            // Capture specific git diff for this file
+                            let git_diff = Command::new("git")
+                                .args(["-C", &project_path, "diff", "--stat", "--", &filepath])
+                                .output()
+                                .ok()
+                                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                                .unwrap_or_default();
+
+                            let relative_path = filepath
+                                .replace(&project_path, "")
+                                .trim_start_matches('/')
+                                .to_string();
+
+                            let act = ActivityRecord {
+                                activity_id: format!("act-vscode-{}", Uuid::new_v4().to_string().split('-').next().unwrap_or("x")),
+                                timestamp: now.to_rfc3339(),
+                                activity_type: "code_edit".to_string(),
+                                app_class: "VS Code".to_string(),
+                                window_title: format!("Mengedit berkas: {}", relative_path),
+                                layout_state: LayoutState {
+                                    focused_app: "VS Code".to_string(),
+                                    screen_mode: "maximized".to_string(),
+                                    left_window_app: None,
+                                    right_window_app: None,
+                                    split_ratio: "100:0".to_string(),
+                                },
+                                duration_ms: 2000,
+                                details: Some(serde_json::json!({
+                                    "filename": filename,
+                                    "relative_path": relative_path,
+                                    "git_diff_summary": git_diff.trim(),
+                                    "message": "Menyimpan perubahan dan memperbaiki baris kode editor"
+                                })),
+                            };
+                            acts.push(act);
+                        }
+                    }
+                    last_scan_time = now;
+                }
+
+                // 2. SCAN ACTIVE RUNNING PROCESSES (TERMINAL / DEV SERVER)
+                let active_processes = get_active_dev_processes();
+                if tick_count % 3 == 0 && !active_processes.is_empty() {
+                    let mut is_running_dev = false;
+                    let mut running_cmds = Vec::new();
+                    
+                    for proc in &active_processes {
+                        if proc.contains("npm run") || proc.contains("node") || proc.contains("cargo run") || proc.contains("docker-compose") {
+                            is_running_dev = true;
+                            running_cmds.push(proc.clone());
                         }
                     }
 
-                    // Cognitive: detect research phase
-                    if prev_app_class == "Google Chrome" && duration > 30000 {
-                        let mut cog = cognitive.lock().unwrap();
-                        cog.research_phase_count += 1;
-                    }
+                    if is_running_dev {
+                        let mut acts = activities.lock().unwrap();
+                        let mut apps_list = unique_apps.lock().unwrap();
+                        if !apps_list.contains(&"Terminal".to_string()) {
+                            apps_list.push("Terminal".to_string());
+                        }
 
-                    // Cognitive: detect retry pattern (Terminal repeated)
-                    if prev_app_class == "Terminal" && app_class == "Terminal" {
-                        let mut cog = cognitive.lock().unwrap();
-                        cog.retry_pattern_count += 1;
+                        let act = ActivityRecord {
+                            activity_id: format!("act-term-{}", Uuid::new_v4().to_string().split('-').next().unwrap_or("x")),
+                            timestamp: now.to_rfc3339(),
+                            activity_type: "terminal_command".to_string(),
+                            app_class: "Terminal".to_string(),
+                            window_title: "Terminal Eksternal — Menjalankan Server & Build".to_string(),
+                            layout_state: LayoutState {
+                                focused_app: "Terminal".to_string(),
+                                screen_mode: "split-screen".to_string(),
+                                left_window_app: Some("VS Code".to_string()),
+                                right_window_app: Some("Terminal".to_string()),
+                                split_ratio: "50:50".to_string(),
+                            },
+                            duration_ms: 6000,
+                            details: Some(serde_json::json!({
+                                "active_commands": running_cmds,
+                                "environment": "Ubuntu Shell — Wayland session",
+                                "activity": "Mengecek logs, me-restart server, atau mem-build program"
+                            })),
+                        };
+                        acts.push(act);
                     }
+                }
 
+                // 3. FALLBACK TO XPROP WINDOW FOCUS DETECTION IF WORKS
+                let (wm_name, wm_class) = get_active_window_info();
+                if !wm_name.is_empty() && !wm_class.is_empty() {
+                    let app_class = classify_app(&wm_class, &wm_name);
+                    
+                    // Track unique apps
                     {
-                        let mut cog = cognitive.lock().unwrap();
-                        cog.total_app_switches += 1;
-                    }
-
-                    prev_window_title = wm_name.clone();
-                    prev_app_class = app_class.clone();
-                    focus_start = now;
-                }
-
-                // Git snapshot every 5 ticks (10 seconds)
-                if tick_count % 5 == 0 {
-                    let pd = proj_dir.lock().unwrap().clone();
-                    if !pd.is_empty() {
-                        if let Some(git_activity) = capture_git_snapshot(&pd) {
-                            let mut acts = activities.lock().unwrap();
-                            acts.push(git_activity);
+                        let mut apps_list = unique_apps.lock().unwrap();
+                        if !apps_list.contains(&app_class) {
+                            apps_list.push(app_class.clone());
                         }
                     }
-                }
-            }
 
-            // Flush last focus window
-            if !prev_window_title.is_empty() {
-                let now = Utc::now();
-                let duration = (now - focus_start).num_milliseconds().max(0) as u64;
-                let layout = detect_layout(&prev_app_class);
-                let activity = ActivityRecord {
-                    activity_id: format!("act-{}", Uuid::new_v4().to_string().split('-').next().unwrap_or("x")),
-                    timestamp: now.to_rfc3339(),
-                    activity_type: classify_activity_type(&prev_app_class, &prev_window_title),
-                    app_class: prev_app_class,
-                    window_title: prev_window_title,
-                    layout_state: layout,
-                    duration_ms: duration,
-                    details: None,
-                };
-                let mut acts = activities.lock().unwrap();
-                acts.push(activity);
+                    if wm_name != prev_window_title || app_class != prev_app_class {
+                        let duration = (now - focus_start).num_milliseconds().max(0) as u64;
+                        if !prev_window_title.is_empty() && duration > 500 {
+                            let layout = detect_layout(&app_class);
+                            let act = ActivityRecord {
+                                activity_id: format!("act-focus-{}", Uuid::new_v4().to_string().split('-').next().unwrap_or("x")),
+                                timestamp: now.to_rfc3339(),
+                                activity_type: classify_activity_type(&app_class, &prev_window_title),
+                                app_class: prev_app_class.clone(),
+                                window_title: prev_window_title.clone(),
+                                layout_state: layout,
+                                duration_ms: duration,
+                                details: build_details(&prev_app_class, &prev_window_title),
+                            };
+                            let mut acts = activities.lock().unwrap();
+                            acts.push(act);
+
+                            let mut cog = cognitive.lock().unwrap();
+                            cog.total_app_switches += 1;
+                        }
+                        prev_window_title = wm_name;
+                        prev_app_class = app_class;
+                        focus_start = now;
+                    }
+                }
+
+                // 4. PERIODIC GIT STATUS CHECK (EVERY 10 SECONDS)
+                if tick_count % 5 == 0 && !project_path.is_empty() {
+                    if let Some(git_activity) = capture_git_snapshot(&project_path) {
+                        let mut acts = activities.lock().unwrap();
+                        acts.push(git_activity);
+                    }
+                }
             }
         });
 
@@ -264,7 +313,7 @@ impl TelemetryEngine {
         *wh = Some(handle);
     }
 
-    pub fn stop(&self) -> Option<String> {
+    pub fn stop(&self) -> Option<Vec<ActivityRecord>> {
         if !self.is_recording.load(Ordering::Relaxed) {
             return None;
         }
@@ -280,279 +329,8 @@ impl TelemetryEngine {
             let _ = h.join();
         }
 
-        // Build export
-        let now = Utc::now();
-        let start = self.session_start.lock().unwrap().unwrap_or(now);
-        let duration = (now - start).num_seconds().max(0) as u64;
-        let mode = self.recording_mode.lock().unwrap().clone();
-        let mut activities = self.activities.lock().unwrap().clone();
-        let mut apps = self.unique_apps.lock().unwrap().clone();
-        let mut cognitive = self.cognitive.lock().unwrap().clone();
-
-        // WAYLAND FALLBACK: If activities are empty, generate a highly realistic set of events
-        if activities.is_empty() {
-            let project_path = self.project_dir.lock().unwrap().clone();
-            
-            // Check for actual git changes in the workspace
-            let git_changes = if !project_path.is_empty() {
-                capture_git_snapshot(&project_path)
-            } else {
-                None
-            };
-
-            if mode == "expert" {
-                apps = vec!["Figma".to_string(), "PDF Viewer".to_string(), "VS Code".to_string(), "Terminal".to_string(), "Docker Desktop".to_string(), "Postman".to_string(), "Git".to_string()];
-                cognitive = CognitiveSignals {
-                    fast_file_switch_count: 2,
-                    research_phase_count: 1,
-                    retry_pattern_count: 1,
-                    total_app_switches: 14,
-                };
-
-                activities = vec![
-                    ActivityRecord {
-                        activity_id: "act-exp-001".to_string(),
-                        timestamp: (now - Duration::from_secs(600)).to_rfc3339(),
-                        activity_type: "design_review".to_string(),
-                        app_class: "Figma".to_string(),
-                        window_title: "SIAKAD UI Mockup - Frame: Database Relational Specifications".to_string(),
-                        layout_state: LayoutState {
-                            focused_app: "Figma".to_string(),
-                            screen_mode: "maximized".to_string(),
-                            left_window_app: None,
-                            right_window_app: None,
-                            split_ratio: "100:0".to_string(),
-                        },
-                        duration_ms: 120000,
-                        details: Some(serde_json::json!({ "action": "inspect_db_schema", "frame": "SIAKAD_Mahasiswa_Relations" })),
-                    },
-                    ActivityRecord {
-                        activity_id: "act-exp-002".to_string(),
-                        timestamp: (now - Duration::from_secs(480)).to_rfc3339(),
-                        activity_type: "document_reference".to_string(),
-                        app_class: "PDF Viewer".to_string(),
-                        window_title: "SIAKAD_DB_Specification.pdf - Evince".to_string(),
-                        layout_state: LayoutState {
-                            focused_app: "PDF Viewer".to_string(),
-                            screen_mode: "split-screen".to_string(),
-                            left_window_app: Some("PDF Viewer".to_string()),
-                            right_window_app: Some("VS Code".to_string()),
-                            split_ratio: "40:60".to_string(),
-                        },
-                        duration_ms: 180000,
-                        details: Some(serde_json::json!({ "document_title": "SIAKAD_DB_Specification.pdf", "viewer": "Evince" })),
-                    },
-                    ActivityRecord {
-                        activity_id: "act-exp-003".to_string(),
-                        timestamp: (now - Duration::from_secs(300)).to_rfc3339(),
-                        activity_type: "config_edit".to_string(),
-                        app_class: "VS Code".to_string(),
-                        window_title: "docker-compose.yml — siakad-auth".to_string(),
-                        layout_state: LayoutState {
-                            focused_app: "VS Code".to_string(),
-                            screen_mode: "split-screen".to_string(),
-                            left_window_app: Some("PDF Viewer".to_string()),
-                            right_window_app: Some("VS Code".to_string()),
-                            split_ratio: "40:60".to_string(),
-                        },
-                        duration_ms: 220000,
-                        details: Some(serde_json::json!({ "file_hint": "docker-compose.yml", "lines_edited": "14-28" })),
-                    },
-                    ActivityRecord {
-                        activity_id: "act-exp-004".to_string(),
-                        timestamp: (now - Duration::from_secs(180)).to_rfc3339(),
-                        activity_type: "infrastructure_check".to_string(),
-                        app_class: "Docker Desktop".to_string(),
-                        window_title: "Container 'siakad-db-postgres' Exited (137) - Out of Memory".to_string(),
-                        layout_state: LayoutState {
-                            focused_app: "Docker Desktop".to_string(),
-                            screen_mode: "maximized".to_string(),
-                            left_window_app: None,
-                            right_window_app: None,
-                            split_ratio: "100:0".to_string(),
-                        },
-                        duration_ms: 90000,
-                        details: Some(serde_json::json!({ "container": "siakad-db-postgres", "exit_code": 137, "reason": "OOM Kill" })),
-                    },
-                    ActivityRecord {
-                        activity_id: "act-exp-005".to_string(),
-                        timestamp: (now - Duration::from_secs(90)).to_rfc3339(),
-                        activity_type: "terminal_command".to_string(),
-                        app_class: "Terminal".to_string(),
-                        window_title: "docker-compose up -d --build".to_string(),
-                        layout_state: LayoutState {
-                            focused_app: "Terminal".to_string(),
-                            screen_mode: "split-screen".to_string(),
-                            left_window_app: Some("VS Code".to_string()),
-                            right_window_app: Some("Terminal".to_string()),
-                            split_ratio: "50:50".to_string(),
-                        },
-                        duration_ms: 60000,
-                        details: Some(serde_json::json!({ "command": "docker-compose up -d --build", "exit_status": 0 })),
-                    },
-                    ActivityRecord {
-                        activity_id: "act-exp-006".to_string(),
-                        timestamp: (now - Duration::from_secs(30)).to_rfc3339(),
-                        activity_type: "api_testing".to_string(),
-                        app_class: "Postman".to_string(),
-                        window_title: "POST /api/v1/auth/login -> 200 OK".to_string(),
-                        layout_state: LayoutState {
-                            focused_app: "Postman".to_string(),
-                            screen_mode: "maximized".to_string(),
-                            left_window_app: None,
-                            right_window_app: None,
-                            split_ratio: "100:0".to_string(),
-                        },
-                        duration_ms: 100000,
-                        details: Some(serde_json::json!({ "endpoint": "/api/v1/auth/login", "method": "POST", "status": 200 })),
-                    },
-                ];
-
-                if let Some(git) = git_changes {
-                    activities.push(git);
-                }
-            } else {
-                apps = vec!["Google Chrome".to_string(), "Postman".to_string(), "VS Code".to_string(), "Terminal".to_string()];
-                cognitive = CognitiveSignals {
-                    fast_file_switch_count: 5,
-                    research_phase_count: 2,
-                    retry_pattern_count: 4,
-                    total_app_switches: 22,
-                };
-
-                activities = vec![
-                    ActivityRecord {
-                        activity_id: "act-jun-001".to_string(),
-                        timestamp: (now - Duration::from_secs(600)).to_rfc3339(),
-                        activity_type: "web_research_stackoverflow".to_string(),
-                        app_class: "Google Chrome".to_string(),
-                        window_title: "cara mengatasi ECONNREFUSED nodejs postgres - Stack Overflow".to_string(),
-                        layout_state: LayoutState {
-                            focused_app: "Google Chrome".to_string(),
-                            screen_mode: "maximized".to_string(),
-                            left_window_app: None,
-                            right_window_app: None,
-                            split_ratio: "100:0".to_string(),
-                        },
-                        duration_ms: 240000,
-                        details: Some(serde_json::json!({ "search_query": "econnrefused nodejs postgres", "source": "Stack Overflow" })),
-                    },
-                    ActivityRecord {
-                        activity_id: "act-jun-002".to_string(),
-                        timestamp: (now - Duration::from_secs(360)).to_rfc3339(),
-                        activity_type: "api_testing".to_string(),
-                        app_class: "Postman".to_string(),
-                        window_title: "POST /api/v1/auth/login -> ECONNREFUSED 127.0.0.1:5432".to_string(),
-                        layout_state: LayoutState {
-                            focused_app: "Postman".to_string(),
-                            screen_mode: "split-screen".to_string(),
-                            left_window_app: Some("VS Code".to_string()),
-                            right_window_app: Some("Postman".to_string()),
-                            split_ratio: "50:50".to_string(),
-                        },
-                        duration_ms: 110000,
-                        details: Some(serde_json::json!({ "endpoint": "/api/v1/auth/login", "error": "ECONNREFUSED" })),
-                    },
-                    ActivityRecord {
-                        activity_id: "act-jun-003".to_string(),
-                        timestamp: (now - Duration::from_secs(250)).to_rfc3339(),
-                        activity_type: "code_confusion".to_string(),
-                        app_class: "VS Code".to_string(),
-                        window_title: "fast_file_switching: config.json -> db.js -> app.js -> package.json".to_string(),
-                        layout_state: LayoutState {
-                            focused_app: "VS Code".to_string(),
-                            screen_mode: "maximized".to_string(),
-                            left_window_app: None,
-                            right_window_app: None,
-                            split_ratio: "100:0".to_string(),
-                        },
-                        duration_ms: 280000,
-                        details: Some(serde_json::json!({ "pattern": "Fast File Switching", "description": "Developer bingung mencari letak konfigurasi host" })),
-                    },
-                    ActivityRecord {
-                        activity_id: "act-jun-004".to_string(),
-                        timestamp: (now - Duration::from_secs(120)).to_rfc3339(),
-                        activity_type: "terminal_command".to_string(),
-                        app_class: "Terminal".to_string(),
-                        window_title: "node app.js -> throw err ECONNREFUSED (connection timeout)".to_string(),
-                        layout_state: LayoutState {
-                            focused_app: "Terminal".to_string(),
-                            screen_mode: "split-screen".to_string(),
-                            left_window_app: Some("VS Code".to_string()),
-                            right_window_app: Some("Terminal".to_string()),
-                            split_ratio: "50:50".to_string(),
-                        },
-                        duration_ms: 130000,
-                        details: Some(serde_json::json!({ "command": "node app.js", "exit_code": 1, "error_type": "ECONNREFUSED" })),
-                    },
-                    ActivityRecord {
-                        activity_id: "act-jun-005".to_string(),
-                        timestamp: (now - Duration::from_secs(60)).to_rfc3339(),
-                        activity_type: "code_edit".to_string(),
-                        app_class: "VS Code".to_string(),
-                        window_title: "db.js — fix host to 'siakad-db-postgres'".to_string(),
-                        layout_state: LayoutState {
-                            focused_app: "VS Code".to_string(),
-                            screen_mode: "maximized".to_string(),
-                            left_window_app: None,
-                            right_window_app: None,
-                            split_ratio: "100:0".to_string(),
-                        },
-                        duration_ms: 150000,
-                        details: Some(serde_json::json!({ "file_edited": "db.js", "target": "database_host_fixed" })),
-                    },
-                ];
-
-                if let Some(git) = git_changes {
-                    activities.push(git);
-                }
-            }
-        }
-
-        let export = SessionExport {
-            session_metadata: SessionMetadata {
-                session_id: format!("ghost-{}", Uuid::new_v4()),
-                title: if mode == "expert" {
-                    format!("SIAKAD Web - CORS API Gateway & PostgreSQL Recovery [Expert]")
-                } else {
-                    format!("SIAKAD Web - Autentikasi JWT & Routing Debugging [Junior]")
-                },
-                created_at: start.to_rfc3339(),
-                ended_at: now.to_rfc3339(),
-                duration_seconds: duration.max(20), // minimum simulated duration
-                mode: mode.clone(),
-                total_activities: activities.len(),
-            },
-            desktop_context_summary: DesktopContextSummary {
-                os: "Ubuntu".to_string(),
-                active_apps_during_session: apps,
-            },
-            timeline_activities: activities,
-            cognitive_signals: cognitive,
-        };
-
-        // Write JSON file
-        let filename = format!(
-            "{}_session_{}.json",
-            mode,
-            now.format("%Y%m%d_%H%M%S")
-        );
-
-        // Use ~/GhostFlow_Data for global desktop app compatibility
-        let data_dir = std::env::var("HOME")
-            .map(|h| std::path::PathBuf::from(h).join("GhostFlow_Data"))
-            .unwrap_or_else(|_| std::path::PathBuf::from("GhostFlow_Data"));
-
-        let _ = std::fs::create_dir_all(&data_dir);
-        let filepath = data_dir.join(&filename);
-
-        match serde_json::to_string_pretty(&export) {
-            Ok(json) => {
-                let _ = std::fs::write(&filepath, json);
-                Some(filepath.to_string_lossy().to_string())
-            }
-            Err(_) => None,
-        }
+        let activities = self.activities.lock().unwrap().clone();
+        Some(activities)
     }
 
     pub fn get_status(&self) -> serde_json::Value {
@@ -586,10 +364,60 @@ impl TelemetryEngine {
     }
 }
 
-// ── Helper Functions ──
+// ── Directory & Process Polling Helper Functions (Wayland Proof) ──
+
+fn scan_recent_modified_files(dir: &Path, since: DateTime<Utc>, max_depth: u32) -> Vec<(String, DateTime<Utc>)> {
+    let mut modified = Vec::new();
+    if max_depth == 0 {
+        return modified;
+    }
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.is_dir() {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                if name == "node_modules" || name == ".git" || name == "target" 
+                   || name == ".next" || name == "out" || name == "dist" 
+                   || name == ".gemini" || name == "build" {
+                    continue;
+                }
+                modified.extend(scan_recent_modified_files(&path, since, max_depth - 1));
+            } else if path.is_file() {
+                if let Ok(metadata) = entry.metadata() {
+                    if let Ok(mtime) = metadata.modified() {
+                        let mtime_chrono: DateTime<Utc> = mtime.into();
+                        if mtime_chrono > since {
+                            modified.push((path.to_string_lossy().to_string(), mtime_chrono));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    modified
+}
+
+fn get_active_dev_processes() -> Vec<String> {
+    let output = Command::new("ps")
+        .args(["-eo", "comm,args"])
+        .output();
+    let mut procs = Vec::new();
+    if let Ok(out) = output {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        for line in stdout.lines() {
+            let line_lower = line.to_lowercase();
+            if line_lower.contains("npm") || line_lower.contains("node") 
+               || line_lower.contains("cargo") || line_lower.contains("docker") 
+               || line_lower.contains("postman") || line_lower.contains("chrome") 
+               || line_lower.contains("firefox") || line_lower.contains("git") {
+                procs.push(line.trim().to_string());
+            }
+        }
+    }
+    procs
+}
 
 fn get_active_window_info() -> (String, String) {
-    // Step 1: Get active window ID
     let win_id_output = Command::new("xprop")
         .args(["-root", "_NET_ACTIVE_WINDOW"])
         .output();
@@ -597,7 +425,6 @@ fn get_active_window_info() -> (String, String) {
     let win_id = match win_id_output {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            // Parse "... window id # 0x1234567"
             stdout
                 .split("# ")
                 .nth(1)
@@ -616,7 +443,6 @@ fn get_active_window_info() -> (String, String) {
         return (String::new(), String::new());
     }
 
-    // Step 2: Get WM_NAME
     let wm_name = Command::new("xprop")
         .args(["-id", &win_id, "WM_NAME"])
         .output()
@@ -627,7 +453,6 @@ fn get_active_window_info() -> (String, String) {
         })
         .unwrap_or_default();
 
-    // Step 3: Get WM_CLASS
     let wm_class = Command::new("xprop")
         .args(["-id", &win_id, "WM_CLASS"])
         .output()
@@ -642,7 +467,6 @@ fn get_active_window_info() -> (String, String) {
 }
 
 fn extract_xprop_string(raw: &str) -> String {
-    // xprop output: WM_NAME(STRING) = "Some Title"
     if let Some(eq_pos) = raw.find('=') {
         let val = raw[eq_pos + 1..].trim();
         val.trim_matches('"').to_string()
@@ -677,14 +501,10 @@ fn classify_app(wm_class: &str, wm_name: &str) -> String {
         "Terminal".to_string()
     } else if class_lower.contains("docker") {
         "Docker Desktop".to_string()
-    } else if class_lower.contains("libreoffice") || class_lower.contains("soffice") {
-        "LibreOffice".to_string()
     } else if class_lower.contains("evince") || class_lower.contains("okular") {
         "PDF Viewer".to_string()
     } else if class_lower.contains("obsidian") {
         "Obsidian".to_string()
-    } else if class_lower.contains("nautilus") || class_lower.contains("thunar") || class_lower.contains("nemo") {
-        "File Manager".to_string()
     } else if !wm_class.is_empty() {
         wm_class.to_string()
     } else {
@@ -717,14 +537,11 @@ fn classify_activity_type(app_class: &str, window_title: &str) -> String {
         "Postman" => "api_testing".to_string(),
         "Terminal" => "terminal_command".to_string(),
         "Docker Desktop" => "infrastructure_check".to_string(),
-        "LibreOffice" | "PDF Viewer" | "Obsidian" => "document_reference".to_string(),
         _ => "desktop_context".to_string(),
     }
 }
 
 fn detect_layout(app_class: &str) -> LayoutState {
-    // Simplified layout detection.
-    // Full version would query window geometry via xprop.
     LayoutState {
         focused_app: app_class.to_string(),
         screen_mode: "maximized".to_string(),
@@ -751,9 +568,6 @@ fn build_details(app_class: &str, window_title: &str) -> Option<serde_json::Valu
         })),
         "Terminal" => Some(serde_json::json!({
             "terminal_title": window_title
-        })),
-        "LibreOffice" | "PDF Viewer" | "Obsidian" => Some(serde_json::json!({
-            "document_title": window_title
         })),
         "Figma" | "Figma (Chrome)" => Some(serde_json::json!({
             "design_file": window_title
@@ -791,7 +605,7 @@ fn capture_git_snapshot(project_dir: &str) -> Option<ActivityRecord> {
         timestamp: Utc::now().to_rfc3339(),
         activity_type: "git_snapshot".to_string(),
         app_class: "Git".to_string(),
-        window_title: format!("{} files changed", changed_files.len()),
+        window_title: format!("{} berkas dirubah (Git)", changed_files.len()),
         layout_state: LayoutState {
             focused_app: "Git (background)".to_string(),
             screen_mode: "background".to_string(),
@@ -808,7 +622,7 @@ fn capture_git_snapshot(project_dir: &str) -> Option<ActivityRecord> {
     })
 }
 
-// ── Tauri Commands ──
+// ── Tauri Commands (Custom Session Logic & Loading) ──
 
 #[tauri::command]
 fn start_recording(
@@ -823,9 +637,9 @@ fn start_recording(
 #[tauri::command]
 fn stop_recording(
     state: tauri::State<'_, Arc<TelemetryEngine>>,
-) -> Result<Option<String>, String> {
-    let path = state.stop();
-    Ok(path)
+) -> Result<Vec<ActivityRecord>, String> {
+    let activities = state.stop().unwrap_or_default();
+    Ok(activities)
 }
 
 #[tauri::command]
@@ -843,6 +657,75 @@ fn get_live_activities(
     Ok(state.get_activities(offset))
 }
 
+#[tauri::command]
+fn save_session_file(
+    title: String,
+    session_data: serde_json::Value,
+) -> Result<String, String> {
+    let data_dir = std::env::var("HOME")
+        .map(|h| PathBuf::from(h).join("GhostFlow_Data"))
+        .unwrap_or_else(|_| PathBuf::from("GhostFlow_Data"));
+
+    let _ = std::fs::create_dir_all(&data_dir);
+    
+    // Sanitize title for filename
+    let sanitized_title: String = title
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect();
+    let filename = format!("{}.json", sanitized_title.to_lowercase());
+    let filepath = data_dir.join(&filename);
+
+    match serde_json::to_string_pretty(&session_data) {
+        Ok(json) => {
+            let _ = std::fs::write(&filepath, json);
+            Ok(filepath.to_string_lossy().to_string())
+        }
+        Err(e) => Err(format!("Gagal serialisasi data: {}", e)),
+    }
+}
+
+#[tauri::command]
+fn load_all_sessions() -> Result<Vec<serde_json::Value>, String> {
+    let data_dir = std::env::var("HOME")
+        .map(|h| PathBuf::from(h).join("GhostFlow_Data"))
+        .unwrap_or_else(|_| PathBuf::from("GhostFlow_Data"));
+
+    let mut sessions = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&data_dir) {
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.is_file() && path.extension().map(|e| e == "json").unwrap_or(false) {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&content) {
+                        sessions.push(json_val);
+                    }
+                }
+            }
+        }
+    }
+    Ok(sessions)
+}
+
+#[tauri::command]
+fn delete_session_file(title: String) -> Result<(), String> {
+    let data_dir = std::env::var("HOME")
+        .map(|h| PathBuf::from(h).join("GhostFlow_Data"))
+        .unwrap_or_else(|_| PathBuf::from("GhostFlow_Data"));
+
+    let sanitized_title: String = title
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect();
+    let filename = format!("{}.json", sanitized_title.to_lowercase());
+    let filepath = data_dir.join(&filename);
+
+    if filepath.exists() {
+        let _ = std::fs::remove_file(filepath);
+    }
+    Ok(())
+}
+
 // ── Tauri App Entry ──
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -857,6 +740,9 @@ pub fn run() {
             stop_recording,
             get_recording_status,
             get_live_activities,
+            save_session_file,
+            load_all_sessions,
+            delete_session_file,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
