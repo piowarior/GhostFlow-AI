@@ -1,0 +1,453 @@
+{
+  "session_metadata": {
+    "session_id": "ghost-session-siakad-auth-101",
+    "title": "SIAKAD Web - Perbaikan CORS API Gateway & Recovery Database PostgreSQL Lokal",
+    "created_at": "2026-05-29T10:00:00Z",
+    "duration_seconds": 2400,
+    "expert": {
+      "developer_id": "dev-budi-001",
+      "name": "Budi Santoso",
+      "role": "Lead Backend Engineer"
+    },
+    "project_name": "Membangun Web SIAKAD - Modul Autentikasi & Database Akademik",
+    "workflow_pattern": [
+      "hypothesis_testing",
+      "infrastructure_validation",
+      "incremental_debugging",
+      "documentation_consultation"
+    ],
+    "difficulty_signal": {
+      "retry_count": 8,
+      "fast_file_switching": true
+    }
+  },
+  "desktop_context_summary": {
+    "os": "Ubuntu",
+    "active_apps_during_session": [
+      "VS Code",
+      "Google Chrome",
+      "Postman",
+      "Figma",
+      "Terminal",
+      "Docker Desktop"
+    ]
+  },
+  "timeline_activities": [
+    {
+      "activity_id": "act-001",
+      "timestamp": "2026-05-29T10:01:00Z",
+      "phase": "Discovery",
+      "type": "desktop_context",
+      "description": "Budi menginspeksi rancangan tabel mahasiswa dan relasi mata kuliah SIAKAD di Figma.",
+      "layout_state": {
+        "focused_app": "Figma",
+        "screen_mode": "maximized",
+        "left_window_app": null,
+        "right_window_app": null,
+        "split_ratio": "100:0"
+      },
+      "details": {
+        "action": "view_design",
+        "context": "SIAKAD ERD Schema & Table Relations"
+      }
+    },
+    {
+      "activity_id": "act-002",
+      "timestamp": "2026-05-29T10:05:15Z",
+      "phase": "Discovery",
+      "type": "web_research",
+      "description": "Budi membuka tab dokumentasi PostgreSQL resmi.",
+      "layout_state": {
+        "focused_app": "Google Chrome",
+        "screen_mode": "split-screen",
+        "left_window_app": "VS Code",
+        "right_window_app": "Google Chrome",
+        "split_ratio": "50:50"
+      },
+      "details": {
+        "source_type": "documentation",
+        "topic": "postgresql client connection pool custom port configuration"
+      }
+    },
+    {
+      "activity_id": "act-003",
+      "timestamp": "2026-05-29T10:12:30Z",
+      "phase": "Development",
+      "type": "file_change",
+      "description": "Budi membuat file .env baru untuk mengisolasi variabel rahasia seperti DB_PORT, JWT_SECRET, dan PORT server.",
+      "layout_state": {
+        "focused_app": "VS Code",
+        "screen_mode": "split-screen",
+        "left_window_app": "VS Code",
+        "right_window_app": "Google Chrome",
+        "split_ratio": "50:50"
+      },
+      "details": {
+        "file_changes": [
+          {
+            "file_path": ".env",
+            "language": "dotenv",
+            "action": "created",
+            "diff_preview": "@@ -0,0 +1,5 @@\n+PORT=8080\n+DB_HOST=127.0.0.1\n+DB_PORT=5432\n+JWT_SECRET=super_secret_siakad_key",
+            "lines_added": 4,
+            "lines_deleted": 0
+          }
+        ]
+      }
+    },
+    {
+      "activity_id": "act-004",
+      "timestamp": "2026-05-29T10:16:45Z",
+      "phase": "Development",
+      "type": "file_change",
+      "description": "Budi membuka server.js dan memasang middleware CORS untuk whitelist frontend SIAKAD http://localhost:3000.",
+      "layout_state": {
+        "focused_app": "VS Code",
+        "screen_mode": "split-screen",
+        "left_window_app": "VS Code",
+        "right_window_app": "Google Chrome",
+        "split_ratio": "60:40"
+      },
+      "details": {
+        "file_changes": [
+          {
+            "file_path": "src/server.js",
+            "language": "javascript",
+            "action": "modified",
+            "diff_preview": "@@ -5,6 +5,10 @@\n const express = require('express');\n+const cors = require('cors');\n const app = express();\n \n+app.use(cors({\n+  origin: 'http://localhost:3000',\n+  credentials: true\n+}));\n app.use(express.json());",
+            "lines_added": 5,
+            "lines_deleted": 0
+          }
+        ]
+      }
+    },
+    {
+      "activity_id": "act-005",
+      "timestamp": "2026-05-29T10:20:10Z",
+      "phase": "Development",
+      "type": "terminal_command",
+      "description": "Budi menjalankan 'npm run dev' lewat terminal VS Code. Server backend SIAKAD berjalan lancar di port 8080.",
+      "layout_state": {
+        "focused_app": "VS Code",
+        "screen_mode": "split-screen",
+        "left_window_app": "VS Code",
+        "right_window_app": "Google Chrome",
+        "split_ratio": "60:40"
+      },
+      "details": {
+        "command": "npm run dev",
+        "exit_code": 0,
+        "output_preview": "> siakad-backend@1.0.0 dev\n> nodemon src/server.js\n[nodemon] starting `node src/server.js`\n[INFO] SIAKAD Backend Server running on port 8080"
+      }
+    },
+    {
+      "activity_id": "act-006",
+      "timestamp": "2026-05-29T10:23:45Z",
+      "phase": "Development",
+      "type": "api_testing",
+      "description": "Budi mengirim login request ke API '/api/v1/auth/login', namun mendadak mendapat respons error 'ECONNREFUSED 127.0.0.1:5432'.",
+      "layout_state": {
+        "focused_app": "Postman",
+        "screen_mode": "split-screen",
+        "left_window_app": "VS Code",
+        "right_window_app": "Postman",
+        "split_ratio": "50:50"
+      },
+      "details": {
+        "request_method": "POST",
+        "request_url": "http://localhost:8080/api/v1/auth/login",
+        "response_status": 500,
+        "response_body": "{\"error\": \"Database connection error\", \"details\": \"connect ECONNREFUSED 127.0.0.1:5432\"}"
+      }
+    },
+    {
+      "activity_id": "act-007",
+      "timestamp": "2026-05-29T10:25:20Z",
+      "phase": "Debug",
+      "type": "web_research",
+      "description": "Budi mencari solusi ECONNREFUSED PostgreSQL di Stack Overflow.",
+      "layout_state": {
+        "focused_app": "Google Chrome",
+        "screen_mode": "split-screen",
+        "left_window_app": "VS Code",
+        "right_window_app": "Google Chrome",
+        "split_ratio": "50:50"
+      },
+      "details": {
+        "source_type": "stackoverflow",
+        "topic": "pg connection refused node postgres client loopback interface"
+      }
+    },
+    {
+      "activity_id": "act-008",
+      "timestamp": "2026-05-29T10:28:10Z",
+      "phase": "Debug",
+      "type": "editor_behavior",
+      "description": "Budi melakukan fast_file_switching (berpindah file dengan sangat cepat) antara file 'db.js' dan '.env' sebanyak 4 kali untuk mengecek kecocokan nilai port DB_PORT.",
+      "layout_state": {
+        "focused_app": "VS Code",
+        "screen_mode": "maximized",
+        "left_window_app": null,
+        "right_window_app": null,
+        "split_ratio": "100:0"
+      },
+      "details": {
+        "action": "fast_file_switching",
+        "files_involved": ["src/config/db.js", ".env"],
+        "switch_count": 4,
+        "duration_seconds": 12
+      }
+    },
+    {
+      "activity_id": "act-009",
+      "timestamp": "2026-05-29T10:32:00Z",
+      "phase": "Debug",
+      "type": "code_experimentation",
+      "description": "Budi melakukan undo-redo pada file 'db.js' sebanyak 6 kali, mengganti 'localhost' ke '127.0.0.1' dan '0.0.0.0' untuk tes port. Menjalankan 'npm run dev' berkali-kali dan gagal.",
+      "layout_state": {
+        "focused_app": "VS Code",
+        "screen_mode": "maximized",
+        "left_window_app": null,
+        "right_window_app": null,
+        "split_ratio": "100:0"
+      },
+      "details": {
+        "file_changes": [
+          {
+            "file_path": "src/config/db.js",
+            "action": "undo_redo_loop",
+            "variations": ["localhost", "127.0.0.1", "0.0.0.0"],
+            "iteration_count": 6
+          }
+        ],
+        "terminal_executions": [
+          {
+            "command": "npm run dev",
+            "execution_count": 3,
+            "consistent_exit": "Error: connect ECONNREFUSED"
+          }
+        ]
+      }
+    },
+    {
+      "activity_id": "act-010",
+      "timestamp": "2026-05-29T10:38:15Z",
+      "phase": "Debug",
+      "type": "desktop_context",
+      "description": "Budi membuka panel Docker, melihat container database 'siakad-db-postgres' mati dengan status 'Exited (137)'.",
+      "layout_state": {
+        "focused_app": "Docker Desktop",
+        "screen_mode": "maximized",
+        "left_window_app": null,
+        "right_window_app": null,
+        "split_ratio": "100:0"
+      },
+      "details": {
+        "action": "inspect_infrastructure",
+        "container_status": "Exited (137)",
+        "insight_gained": "PostgreSQL container is dead."
+      }
+    },
+    {
+      "activity_id": "act-011",
+      "timestamp": "2026-05-29T10:41:30Z",
+      "phase": "Debug",
+      "type": "web_research",
+      "description": "Budi mencari penyebab Exit Code 137 PostgreSQL Docker di dokumentasi.",
+      "layout_state": {
+        "focused_app": "Google Chrome",
+        "screen_mode": "split-screen",
+        "left_window_app": "VS Code",
+        "right_window_app": "Google Chrome",
+        "split_ratio": "50:50"
+      },
+      "details": {
+        "source_type": "documentation",
+        "topic": "docker container exit code 137 postgresql memory limits"
+      }
+    },
+    {
+      "activity_id": "act-012",
+      "timestamp": "2026-05-29T10:45:00Z",
+      "phase": "Debug",
+      "type": "file_change",
+      "description": "Budi mengedit file 'docker-compose.yml' untuk menambahkan limit memori kontainer 512MB agar tidak memakan seluruh RAM lokal.",
+      "layout_state": {
+        "focused_app": "VS Code",
+        "screen_mode": "split-screen",
+        "left_window_app": "VS Code",
+        "right_window_app": "Google Chrome",
+        "split_ratio": "60:40"
+      },
+      "details": {
+        "file_changes": [
+          {
+            "file_path": "docker-compose.yml",
+            "language": "yaml",
+            "action": "modified",
+            "diff_preview": "@@ -12,6 +12,10 @@\n     environment:\n       POSTGRES_USER: siakad_admin\n       POSTGRES_PASSWORD: secret123\n+    deploy:\n+      resources:\n+        limits:\n+          memory: 512M\n     ports:\n       - \"5432:5432\"",
+            "lines_added": 4,
+            "lines_deleted": 0
+          }
+        ]
+      }
+    },
+    {
+      "activity_id": "act-013",
+      "timestamp": "2026-05-29T10:48:25Z",
+      "phase": "Ship",
+      "type": "terminal_command",
+      "description": "Budi membuka terminal eksternal, menjalankan perintah 'docker-compose up -d --build' untuk merestart db dengan spesifikasi limitasi baru.",
+      "layout_state": {
+        "focused_app": "Terminal",
+        "screen_mode": "maximized",
+        "left_window_app": null,
+        "right_window_app": null,
+        "split_ratio": "100:0"
+      },
+      "details": {
+        "command": "docker-compose up -d --build",
+        "exit_code": 0,
+        "output_preview": "Recreating siakad-db-postgres ... done\nStarting siakad-db-postgres ... done"
+      }
+    },
+    {
+      "activity_id": "act-014",
+      "timestamp": "2026-05-29T10:52:10Z",
+      "phase": "Ship",
+      "type": "api_testing",
+      "description": "Budi mengirim ulang request login, respons sukses mengembalikan status '200 OK' beserta payload JWT token mahasiswa SIAKAD.",
+      "layout_state": {
+        "focused_app": "Postman",
+        "screen_mode": "split-screen",
+        "left_window_app": "VS Code",
+        "right_window_app": "Postman",
+        "split_ratio": "50:50"
+      },
+      "details": {
+        "request_method": "POST",
+        "request_url": "http://localhost:8080/api/v1/auth/login",
+        "response_status": 200,
+        "response_body": "{\"status\": \"success\", \"data\": {\"token\": \"eyJhbGciOiJIUzI1NiIsInR...\"}}"
+      }
+    },
+    {
+      "activity_id": "act-015",
+      "timestamp": "2026-05-29T10:55:00Z",
+      "phase": "Ship",
+      "type": "terminal_command",
+      "description": "Budi menjalankan 'git status' dan melakukan git commit.",
+      "layout_state": {
+        "focused_app": "Terminal",
+        "screen_mode": "maximized",
+        "left_window_app": null,
+        "right_window_app": null,
+        "split_ratio": "100:0"
+      },
+      "details": {
+        "commands": [
+          {
+            "command": "git commit -am 'feat(auth): fix CORS whitelist and stabilize PostgreSQL container RAM limit'",
+            "exit_code": 0,
+            "output_preview": "[main 8f3d1b9] feat(auth): fix CORS whitelist and stabilize PostgreSQL container RAM limit\n 3 files changed, 18 insertions(+)"
+          }
+        ]
+      }
+    }
+  ],
+  "ai_analysis": {
+    "summary": "Dalam sesi pengembangan modul Autentikasi SIAKAD, Senior Engineer Budi Santoso berhasil menerapkan CORS middleware dan mengatasi masalah infrastruktur database yang disebabkan oleh kehabisan memori lokal. Melalui proses debugging bertahap, ia melacak error ECONNREFUSED dari ranah kode Node.js ke Docker Desktop, dan mengatasinya dengan mendefinisikan pembatasan memori kontainer di docker-compose.",
+    "root_cause": "Akar masalah adalah OOM-killed pada kontainer PostgreSQL lokal. Sistem operasi Ubuntu menghentikan proses Docker (Exit Code 137) karena memori tidak dibatasi.",
+    "reasoning_insights": [
+      {
+        "target_activity_id": "act-001",
+        "insight": "Budi menganalisis spesifikasi figma terlebih dahulu untuk memetakan skema database guna menghindari kegagalan normalisasi data di awal.",
+        "reasoning_confidence": 0.95
+      },
+      {
+        "target_activity_id": "act-002",
+        "insight": "Budi memverifikasi batas pooling koneksi default sistem operasi untuk mencegah potensi bottleneck server ketika backend SIAKAD diuji secara massal.",
+        "reasoning_confidence": 0.90
+      },
+      {
+        "target_activity_id": "act-003",
+        "insight": "Pembuatan file .env terisolasi sejak awal menjamin nilai kredensial sensitif SIAKAD tidak akan pernah ter-hardcode di dalam repositori Git.",
+        "reasoning_confidence": 0.93
+      },
+      {
+        "target_activity_id": "act-004",
+        "insight": "Pemasangan konfigurasi CORS di awal pengembangan mencegah kegagalan pre-flight request ketika dihubungkan ke client frontend.",
+        "reasoning_confidence": 0.96
+      },
+      {
+        "target_activity_id": "act-005",
+        "insight": "Menjalankan server lokal sesaat setelah konfigurasi CORS bertujuan mengisolasi keberhasilan layer jaringan sebelum ia mulai menyusun modul database.",
+        "reasoning_confidence": 0.89
+      },
+      {
+        "target_activity_id": "act-006",
+        "insight": "Pengujian endpoint via Postman mengisolasi letak crash. Server API Gateway berhasil menerima request, namun gagal melakukan handshake ke database pool.",
+        "reasoning_confidence": 0.97
+      },
+      {
+        "target_activity_id": "act-007",
+        "insight": "Budi menganalisis apakah error penolakan koneksi disebabkan oleh IP loopback default database PostgreSQL yang tidak mendengarkan port 5432.",
+        "reasoning_confidence": 0.94
+      },
+      {
+        "target_activity_id": "act-008",
+        "insight": "Budi mengeliminasi dugaan pertama dengan memastikan variabel DB_PORT di .env selaras dengan modul pg pool di db.js.",
+        "reasoning_confidence": 0.91
+      },
+      {
+        "target_activity_id": "act-009",
+        "insight": "Siklus trial-and-error ini menunjukkan Budi sedang mengeliminasi masalah DNS routing sistem operasi lokal sebelum mencurigai status kontainer database.",
+        "reasoning_confidence": 0.88
+      },
+      {
+        "target_activity_id": "act-010",
+        "insight": "Budi menggeser fokus penyelidikan dari layer kode ke layer infrastruktur. Penemuan Exit Code 137 langsung mengungkap adanya OOM (Out Of Memory) kill.",
+        "reasoning_confidence": 0.98
+      },
+      {
+        "target_activity_id": "act-011",
+        "insight": "Budi memverifikasi bahwa status keluar 137 mengonfirmasi sistem operasi Ubuntu mematikan paksa container database karena batas memori terlampaui.",
+        "reasoning_confidence": 0.95
+      },
+      {
+        "target_activity_id": "act-012",
+        "insight": "Pemberian batasan memory limit di docker-compose.yml menjamin kestabilan container database tanpa mengambil alih memori utama OS host.",
+        "reasoning_confidence": 0.97
+      },
+      {
+        "target_activity_id": "act-013",
+        "insight": "Re-deploy kontainer database dengan konfigurasi memori baru untuk memastikan PostgreSQL berjalan stabil di background daemon.",
+        "reasoning_confidence": 0.92
+      },
+      {
+        "target_activity_id": "act-014",
+        "insight": "Pengujian ulang berhasil memverifikasi bahwa alur gateway API, routing auth login, dan pooling database SIAKAD sudah tersambung dan pulih sepenuhnya.",
+        "reasoning_confidence": 0.99
+      },
+      {
+        "target_activity_id": "act-015",
+        "insight": "Pengarsipan atomic commit untuk mendokumentasikan perbaikan CORS whitelist dan penyesuaian limit memori Docker agar bisa langsung digunakan oleh tim developer lainnya.",
+        "reasoning_confidence": 0.94
+      }
+    ],
+    "key_takeaways": [
+      "Ketika dihadapkan pada error ECONNREFUSED, jangan terlalu lama melakukan debugging konfigurasi host/port di dalam kode aplikasi. Segera verifikasi infrastruktur Docker.",
+      "Exit Code 137 pada Docker mengindikasikan bahwa kontainer dimatikan paksa oleh sistem operasi karena kehabisan memori (OOM-Killed).",
+      "Pemberian batasan resource memori eksplisit di dalam docker-compose.yml lokal wajib dilakukan untuk mencegah kebocoran memori layanan database."
+    ]
+  },
+  "chatbot_mentor": {
+    "mentor_persona": "Budi Santoso adalah Lead Backend Engineer yang logis, metodis, dan suka mengajar menggunakan analogi infrastruktur dunia nyata.",
+    "session_memory": "Budi berhasil meresolusi isu ECONNREFUSED dengan menelusuri akar masalahnya hingga ke infrastruktur. Container postgresql-nya mati karena OOM-kill (Exit Code 137), yang diatasi dengan menambahkan limit RAM 512M di docker-compose.",
+    "suggested_questions": [
+      "Mengapa Kak Budi mengisolasi CORS di awal pengembangan?",
+      "Kenapa Budi mencoba mengubah localhost ke 0.0.0.0 saat mendapat ECONNREFUSED?",
+      "Apa arti Exit Code 137 pada Docker?"
+    ]
+  }
+}
