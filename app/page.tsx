@@ -362,15 +362,11 @@ export default function GhostFlowDashboard() {
 
     try {
       if (isRecording) {
-        // STOP - Get final activities FIRST before stopping to ensure data is captured
-        const finalActs: TimelineActivity[] = await invoke('get_live_activities', { offset: 0 });
+        // STOP - Fetch status and final activities before turning off
         const status: any = await invoke('get_recording_status');
-        
-        // Now stop recording (this will clear cache on backend)
-        await invoke('stop_recording');
+        const finalActs: TimelineActivity[] = await invoke('stop_recording');
         setIsRecording(false);
 
-        // Save to disk with the final activities we captured BEFORE stopping
         setSessions(prev => prev.map(s => {
           if (s.id === selectedSessionId) {
             const updated = {

@@ -87,9 +87,6 @@ pub struct TelemetryEngine {
     error_detected: Arc<AtomicBool>,
     error_keyword: Arc<Mutex<String>>,
     modified_files_during_error: Arc<Mutex<Vec<String>>>,
-
-    // Cache last activities after stop for retrieval before clear
-    last_session_activities: Arc<Mutex<Vec<ActivityRecord>>>,
 }
 
 impl TelemetryEngine {
@@ -114,7 +111,6 @@ impl TelemetryEngine {
             error_detected: Arc::new(AtomicBool::new(false)),
             error_keyword: Arc::new(Mutex::new(String::new())),
             modified_files_during_error: Arc::new(Mutex::new(Vec::new())),
-            last_session_activities: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -573,18 +569,11 @@ impl TelemetryEngine {
             let _ = h.join();
         }
 
-        // Get final compact clean activities, then SAVE to cache BEFORE clearing
+        // Get final compact clean activities, then clear cache completely
         let final_activities = {
             let mut acts = self.activities.lock().unwrap();
             let result = acts.clone();
-            
-            // Save to last_session_activities cache BEFORE clearing
-            {
-                let mut cached = self.last_session_activities.lock().unwrap();
-                *cached = result.clone();
-            }
-            
-            acts.clear(); // Clear RAM cache after saving to persistent cache
+            acts.clear(); // Clear RAM cache immediately
             result
         };
 
@@ -626,23 +615,10 @@ impl TelemetryEngine {
 
     pub fn get_activities(&self, offset: usize) -> Vec<ActivityRecord> {
         let acts = self.activities.lock().unwrap();
-        
-        // If recording is active, return from current activities
-        if self.is_recording.load(Ordering::Relaxed) {
-            if offset < acts.len() {
-                acts[offset..].to_vec()
-            } else {
-                Vec::new()
-            }
+        if offset < acts.len() {
+            acts[offset..].to_vec()
         } else {
-            // If recording stopped, return from cached last session activities
-            drop(acts); // Release lock
-            let cached = self.last_session_activities.lock().unwrap();
-            if offset < cached.len() {
-                cached[offset..].to_vec()
-            } else {
-                Vec::new()
-            }
+            Vec::new()
         }
     }
 }
