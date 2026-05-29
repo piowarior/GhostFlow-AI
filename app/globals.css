@@ -1,8 +1,15 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #0a0a0c;
+  --foreground: #e4e4e7;
+  --surface: #121317;
+  --surface-2: #181a1f;
+  --border: #222228;
+  --accent: #2dd4bf;
+  --accent-dim: rgba(45, 212, 191, 0.1);
+  --danger: #f43f5e;
+  --danger-dim: rgba(244, 63, 94, 0.1);
 }
 
 @theme inline {
@@ -12,15 +19,64 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans), 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* ── Scrollbar Styles ── */
+.scrollbar-hide::-webkit-scrollbar { display: none; }
+.scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+
+.custom-scrollbar::-webkit-scrollbar { width: 4px; }
+.custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.custom-scrollbar::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
+.custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #555; }
+
+/* ── Recording Pulse Animation ── */
+@keyframes pulse-ring {
+  0% { transform: scale(1); opacity: 0.6; }
+  50% { transform: scale(1.8); opacity: 0; }
+  100% { transform: scale(1); opacity: 0; }
+}
+.pulse-ring { animation: pulse-ring 2s ease-out infinite; }
+
+@keyframes live-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+.live-dot { animation: live-dot 1.5s ease-in-out infinite; }
+
+/* ── Log Entry Slide-in ── */
+@keyframes slide-in-right {
+  from { opacity: 0; transform: translateX(20px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.animate-slide-in { animation: slide-in-right 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) forwards; }
+
+/* ── Gradient Text Util ── */
+.text-gradient {
+  background: linear-gradient(135deg, #2dd4bf 0%, #818cf8 50%, #f472b6 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ── Glass Card Effect ── */
+.glass-card {
+  background: rgba(18, 19, 23, 0.6);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(34, 34, 40, 0.8);
+}
+
+/* ── Noise Texture Overlay ── */
+.noise-bg::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: 0.03;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='1'/%3E%3C/svg%3E");
+  pointer-events: none;
+  z-index: 0;
 }

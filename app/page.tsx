@@ -2,10 +2,10 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  Terminal, FileCode, CheckCircle, Database, Ghost, 
-  MessageSquare, Layout, Server, AlertCircle, 
-  Search, X, Play, Zap, BrainCircuit, Activity, Power, Clock, 
+import {
+  Terminal, FileCode, CheckCircle, Database, Ghost,
+  MessageSquare, Layout, Server, AlertCircle,
+  Search, X, Play, Zap, BrainCircuit, Activity, Power, Clock,
   Folder, User, Cpu, Sparkles, ChevronRight, History, Plus, Trash2, Sliders, ToggleLeft, ToggleRight
 } from 'lucide-react';
 
@@ -29,6 +29,7 @@ type TimelineActivity = {
     left_window_app: string | null;
     right_window_app: string | null;
     split_ratio: string;
+    organization_score?: string;
   };
   details?: any;
   duration_ms?: number;
@@ -57,7 +58,7 @@ export default function GhostFlowDashboard() {
   const [sessions, setSessions] = useState<SessionItem[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string>('');
   const [currentStep, setCurrentStep] = useState(0);
-  
+
   // Cognitive Telemetry & AI Assistant Switches
   const [isRecording, setIsRecording] = useState(false); // Telemetry On/Off
   const [isAiActive, setIsAiActive] = useState(true);    // AI Mentor On/Off
@@ -69,30 +70,40 @@ export default function GhostFlowDashboard() {
   const [newTitle, setNewTitle] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [newMode, setNewMode] = useState<'expert' | 'junior'>('expert');
-  const [newProjDir, setNewProjDir] = useState('.');
+  const [newProjDir, setNewProjDir] = useState('/home/piowarior/perkuliahan/GhostFlow-AI');
 
   // Chat/Mentor States
   const [chatMessages, setChatMessages] = useState([
     { role: 'assistant', text: `Halo! Saya Ghost Cognitive Mentor. Hubungkan telemetri untuk merekam kegiatan koding Anda secara real-time, atau telusuri reasoning kognitif expert dari riwayat sesi.` }
   ]);
   const [chatInput, setChatInput] = useState('');
+  const [geminiKey, setGeminiKey] = useState('');
+
+  const handleSaveGeminiKey = (key: string) => {
+    setGeminiKey(key);
+    localStorage.setItem('ghostflow_gemini_key', key);
+  };
 
   // Selected session data
   const currentSession = sessions.find(s => s.id === selectedSessionId) || sessions[0];
   const activeActivity = currentSession?.activities[currentStep];
-  
+
   // AI Insights mapping
-  const currentInsight = activeActivity 
+  const currentInsight = activeActivity
     ? rawSessionData.ai_analysis.reasoning_insights.find(i => i.target_activity_id === activeActivity.activity_id) || {
-        insight: `Analisis AI Mendeteksi aktivitas ${activeActivity.app_class || activeActivity.layout_state?.focused_app} (${activeActivity.activity_type || activeActivity.type}). Ini mencerminkan pola pemecahan masalah ${currentSession.mode === 'expert' ? 'expert terarah & diagnosis bersih' : 'junior - tahap trial-error awal'}.`,
-        reasoning_confidence: currentSession.mode === 'expert' ? 0.94 : 0.81
-      }
+      insight: `Analisis AI Mendeteksi aktivitas ${activeActivity.app_class || activeActivity.layout_state?.focused_app} (${activeActivity.activity_type || activeActivity.type}). Ini mencerminkan pola pemecahan masalah ${currentSession.mode === 'expert' ? 'expert terarah & diagnosis bersih' : 'junior - tahap trial-error awal'}.`,
+      reasoning_confidence: currentSession.mode === 'expert' ? 0.94 : 0.81
+    }
     : null;
 
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   // --- Initialize & Load from File System ---
   useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const savedKey = localStorage.getItem('ghostflow_gemini_key') || '';
+      setGeminiKey(savedKey);
+    }
     if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
       setInTauri(true);
       loadAllSessionsFromFileSystem();
@@ -152,7 +163,12 @@ export default function GhostFlowDashboard() {
           activities: f.timeline_activities,
           cognitive_signals: f.cognitive_signals
         }));
-        setSessions(loaded);
+        const uniqueSessions = loaded.filter(
+          (session, index, self) =>
+            index === self.findIndex(s => s.id === session.id)
+        );
+
+        setSessions(uniqueSessions);
         setSelectedSessionId(loaded[0].id);
       } else {
         // First-time fallback: Save preloaded expert Budi session into the user's directory
@@ -231,7 +247,7 @@ export default function GhostFlowDashboard() {
     try {
       const status: any = await invoke('get_recording_status');
       setDuration(status.duration_seconds);
-      
+
       const newActs: TimelineActivity[] = await invoke('get_live_activities', { offset: 0 });
 
       setSessions(prev => prev.map(s => {
@@ -250,9 +266,14 @@ export default function GhostFlowDashboard() {
         return s;
       }));
 
-      // Focus latest step automatically
+      // Focus latest step automatically only if user is at the end or has no step selected
       if (newActs.length > 0) {
-        setCurrentStep(newActs.length - 1);
+        setCurrentStep(prev => {
+          if (prev === -1 || prev === newActs.length - 2 || prev >= newActs.length) {
+            return newActs.length - 1;
+          }
+          return prev;
+        });
       }
     } catch (e) {
       console.error("Poll telemetry error:", e);
@@ -341,14 +362,15 @@ export default function GhostFlowDashboard() {
 
     try {
       if (isRecording) {
-        // STOP
+        // STOP - Get final activities FIRST before stopping to ensure data is captured
+        const finalActs: TimelineActivity[] = await invoke('get_live_activities', { offset: 0 });
+        const status: any = await invoke('get_recording_status');
+        
+        // Now stop recording (this will clear cache on backend)
         await invoke('stop_recording');
         setIsRecording(false);
 
-        // Fetch finalized telemetry data
-        const status: any = await invoke('get_recording_status');
-        const finalActs: TimelineActivity[] = await invoke('get_live_activities', { offset: 0 });
-
+        // Save to disk with the final activities we captured BEFORE stopping
         setSessions(prev => prev.map(s => {
           if (s.id === selectedSessionId) {
             const updated = {
@@ -364,22 +386,22 @@ export default function GhostFlowDashboard() {
           return s;
         }));
 
-        setChatMessages(prev => [...prev, { 
-          role: 'assistant', 
-          text: `Pencatatan dihentikan. Seluruh log aktivitas Anda berhasil disimpan di ~/GhostFlow_Data/${currentSession.title.toLowerCase().replace(/[^a-z0-str]/g, '_')}.json` 
+        setChatMessages(prev => [...prev, {
+          role: 'assistant',
+          text: `Pencatatan dihentikan. Seluruh log aktivitas Anda berhasil disimpan di ~/GhostFlow_Data/${currentSession.title.toLowerCase().replace(/[^a-z0-str]/g, '_')}.json`
         }]);
       } else {
         // START
-        await invoke('start_recording', { 
-          mode: currentSession.mode, 
-          projectDir: currentSession.project_dir 
+        await invoke('start_recording', {
+          mode: currentSession.mode,
+          projectDir: currentSession.project_dir
         });
         setIsRecording(true);
         setDuration(0);
 
-        setChatMessages(prev => [...prev, { 
-          role: 'assistant', 
-          text: `🔴 Perekam Telemetri AKTIF. Saya mendeteksi posisi & kegiatan Anda di VS Code, Terminal, dan Chrome secara real-time. Silakan mulai koding.` 
+        setChatMessages(prev => [...prev, {
+          role: 'assistant',
+          text: `🔴 Perekam Telemetri AKTIF. Saya mendeteksi posisi & kegiatan Anda di VS Code, Terminal, dan Chrome secara real-time. Silakan mulai koding.`
         }]);
       }
     } catch (e) {
@@ -405,27 +427,87 @@ export default function GhostFlowDashboard() {
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
-  const handleSendMessage = (text: string) => {
+  const handleSendMessage = async (text: string) => {
     if (!text.trim()) return;
     setChatMessages(prev => [...prev, { role: 'user', text }]);
     setChatInput('');
-    
-    setTimeout(() => {
-      let reply = `Sebagai Mentor Kognitif, saya mendeteksi sesi "${currentSession.title}" sedang terpilih. `;
-      if (currentSession.mode === 'expert') {
-        reply += `Analisis pola kerja expert menunjukkan struktur diagnosis PostgreSQL yang metodis dan minim app switching.`;
-      } else {
-        reply += `Sesi junior menunjukkan kebingungan routing. Rekomendasi saya: telusuri git diff di VS Code dan perhatikan logs terminal PostgreSQL.`;
+
+    if (geminiKey.trim()) {
+      try {
+        setChatMessages(prev => [...prev, { role: 'assistant', text: 'Thinking...' }]);
+
+        const systemPrompt = `Anda adalah GhostFlow AI Cognitive Mentor, asisten kognitif cerdas untuk memandu junior developer belajar dari pola kerja senior/expert.
+Berikut adalah data aktivitas dari sesi kerja expert saat ini:
+Judul Sesi: ${currentSession?.title || "Sesi Tanpa Judul"}
+Deskripsi: ${currentSession?.description || "Tidak ada deskripsi"}
+Mode: ${currentSession?.mode || "expert"}
+Durasi: ${currentSession?.duration_seconds || 0} detik
+Aktivitas: ${JSON.stringify((currentSession?.activities || []).map(a => ({
+  time: a.timestamp,
+  app: a.app_class,
+  title: a.window_title,
+  type: a.activity_type || a.type,
+  details: a.details
+})))}
+
+Tugas Anda adalah menjawab pertanyaan user berdasarkan log aktivitas kognitif expert di atas. Jelaskan mengapa expert mengambil tindakan tersebut, pola pikirnya (mindset), kerapian tata letaknya (layout), serta analisis debugging atau risetnya. Jawablah dalam Bahasa Indonesia dengan nada professional, memotivasi, dan edukatif. Jika log kognitif di atas kosong, beri tahu user untuk mengaktifkan telemetri terlebih dahulu.`;
+
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  {
+                    text: `${systemPrompt}\n\nUser: ${text}`
+                  }
+                ]
+              }
+            ]
+          })
+        });
+
+        const data = await response.json();
+        const replyText = data.candidates?.[0]?.content?.parts?.[0]?.text || "Maaf, tidak ada respon dari Gemini. Pastikan API Key Anda benar.";
+
+        setChatMessages(prev => {
+          const filtered = prev.filter(m => m.text !== 'Thinking...');
+          return [...filtered, { role: 'assistant', text: replyText }];
+        });
+      } catch (err) {
+        console.error("Gemini API Error:", err);
+        setChatMessages(prev => {
+          const filtered = prev.filter(m => m.text !== 'Thinking...');
+          return [...filtered, { role: 'assistant', text: "Gagal terhubung ke Gemini API. Silakan cek koneksi internet dan API Key Anda." }];
+        });
       }
-      setChatMessages(prev => [...prev, { role: 'assistant', text: reply }]);
-    }, 850);
+    } else {
+      setTimeout(() => {
+        let reply = `Sebagai Mentor Kognitif, saya mendeteksi sesi "${currentSession?.title || "aktif"}" sedang terpilih. (Masukkan Gemini API Key di kanan atas obrolan untuk analisis real-time menggunakan AI model Gemini 1.5 Flash). `;
+        
+        const actType = activeActivity?.activity_type || activeActivity?.type || "";
+        if (actType.includes("resolution") || actType.includes("fix")) {
+          reply += `Developer expert mendeteksi error, mencari akar masalahnya, dan melakukan perbaikan cepat pada kode sebelum menjalankan kembali web server. Pola ini efisien karena tidak berputar-putar di satu error.`;
+        } else if (actType.includes("code_edit")) {
+          reply += `Developer sedang fokus menulis kode di file ${activeActivity?.details?.filename || "sumber"}. Ini adalah tahap kognitif implementasi murni.`;
+        } else if (actType.includes("research")) {
+          reply += `Riset web dilakukan pada halaman "${activeActivity?.window_title}". Ini memperlihatkan bahwa senior dev aktif memverifikasi dokumentasi untuk menghindari bug implementasi.`;
+        } else if (currentSession?.mode === 'expert') {
+          reply += `Secara umum, pola kerja expert di sesi ini terstruktur dengan pergantian fokus yang minimal (CPU & mental overhead rendah).`;
+        } else {
+          reply += `Sesi ini merekam aktivitas pembelajaran awal. Rekomendasi: telusuri riwayat editor dan perhatikan transisi command terminal.`;
+        }
+        setChatMessages(prev => [...prev, { role: 'assistant', text: reply }]);
+      }, 700);
+    }
   };
 
   const transition = { ease: [0.2, 0.8, 0.2, 1] as [number, number, number, number], duration: 0.4 };
 
   return (
     <div className="min-h-screen h-screen bg-[#0a0a0c] text-zinc-200 font-sans overflow-hidden flex flex-col selection:bg-teal-500/30">
-      
+
       {/* --- Top Control Bar (Clean Switches) --- */}
       <header className="h-[76px] flex-shrink-0 border-b border-[#222228] bg-[#0a0a0c]/80 backdrop-blur-xl px-6 flex items-center justify-between z-20">
         <div className="flex items-center space-x-6">
@@ -440,17 +522,16 @@ export default function GhostFlowDashboard() {
             </div>
           </div>
           <div className="h-7 w-[1px] bg-[#222228]"></div>
-          
+
           {/* SEPARATED SWITCH 1: TELEMETRY POLLER ON/OFF */}
           {currentSession && (
             <div className="flex items-center space-x-4 bg-[#121317] border border-[#222228] p-1.5 rounded-xl shadow-inner">
-              <button 
+              <button
                 onClick={toggleRecording}
-                className={`flex items-center px-4 py-1.5 rounded-lg font-bold text-xs transition-all ${
-                  isRecording 
-                  ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20 shadow-[0_0_15px_rgba(244,63,94,0.1)]' 
-                  : 'bg-teal-500 text-black hover:bg-teal-400'
-                }`}
+                className={`flex items-center px-4 py-1.5 rounded-lg font-bold text-xs transition-all ${isRecording
+                    ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20 shadow-[0_0_15px_rgba(244,63,94,0.1)]'
+                    : 'bg-teal-500 text-black hover:bg-teal-400'
+                  }`}
               >
                 <Power className="w-4 h-4 mr-2" />
                 {isRecording ? 'MATIKAN TELEMETRI' : 'AKTIFKAN TELEMETRI'}
@@ -467,9 +548,9 @@ export default function GhostFlowDashboard() {
                       RECORDING
                     </div>
                     <div className="text-zinc-600">|</div>
-                    <div className="text-zinc-300 flex items-center"><Clock className="w-3.5 h-3.5 mr-1 text-zinc-500"/> {formatTime(duration)}</div>
+                    <div className="text-zinc-300 flex items-center"><Clock className="w-3.5 h-3.5 mr-1 text-zinc-500" /> {formatTime(duration)}</div>
                     <div className="text-zinc-600">|</div>
-                    <div className="text-teal-400 flex items-center"><Activity className="w-3.5 h-3.5 mr-1 text-teal-500"/> {currentSession?.activities.length || 0} logs</div>
+                    <div className="text-teal-400 flex items-center"><Activity className="w-3.5 h-3.5 mr-1 text-teal-500" /> {currentSession?.activities.length || 0} logs</div>
                   </>
                 ) : (
                   <div className="text-zinc-500 flex items-center">
@@ -485,7 +566,7 @@ export default function GhostFlowDashboard() {
         <div className="flex items-center space-x-4">
           <div className="flex items-center space-x-3 bg-[#121317] border border-[#222228] p-1.5 rounded-xl">
             <span className="text-xs font-mono text-zinc-400 pl-2">Asisten Kognitif AI</span>
-            <button 
+            <button
               onClick={() => setIsAiActive(!isAiActive)}
               className="text-zinc-400 hover:text-zinc-200 transition-colors"
             >
@@ -503,19 +584,19 @@ export default function GhostFlowDashboard() {
           </div>
         </div>
       </header>
-      
+
       {/* Workflow DNA Bar at Top */}
       <div className="w-full h-1 flex items-center bg-[#0a0a0c]">
-         {currentSession?.activities.map((act, i) => (
-           <div key={i} className={`flex-1 h-full transition-all duration-500 ${getPhaseColor(act.phase || 'development', i === currentStep)} mx-[1px] rounded-full ${i === currentStep ? 'opacity-100 shadow-[0_0_8px_rgba(255,255,255,0.3)]' : 'opacity-60'}`}></div>
-         ))}
+        {currentSession?.activities.map((act, i) => (
+          <div key={i} className={`flex-1 h-full transition-all duration-500 ${getPhaseColor(act.phase || 'development', i === currentStep)} mx-[1px] rounded-full ${i === currentStep ? 'opacity-100 shadow-[0_0_8px_rgba(255,255,255,0.3)]' : 'opacity-60'}`}></div>
+        ))}
       </div>
 
       <main className="flex-1 flex overflow-hidden">
-        
+
         {/* --- Gemini-style Sidebar (RIWAYAT SESI & LANGKAH DETAIL) --- */}
         <div className="w-[300px] flex-shrink-0 border-r border-[#222228] bg-[#0a0a0c] flex flex-col z-10">
-          
+
           {/* Header Sidebar with "+ Sesi Baru" button */}
           <div className="p-4 border-b border-[#222228] flex items-center justify-between bg-[#0d0e12]">
             <span className="text-xs font-mono text-zinc-400 tracking-wider">RIWAYAT SESI</span>
@@ -530,20 +611,19 @@ export default function GhostFlowDashboard() {
 
           {/* Sesi List Panel */}
           <div className="flex-1 overflow-y-auto p-4 space-y-3 scrollbar-hide">
-            
-            {sessions.map(s => {
+
+            {sessions.map((s, idx) => {
               const isSelected = s.id === selectedSessionId;
               return (
                 <div
-                  key={s.id}
+                  key={`${s.id}-${idx}`}
                   onClick={() => { setSelectedSessionId(s.id); setCurrentStep(0); }}
-                  className={`w-full text-left p-4 rounded-xl flex flex-col transition-all border relative group cursor-pointer ${
-                    isSelected 
-                    ? 'bg-[#181a1f] border-[#333] shadow-md' 
-                    : 'bg-[#121317]/30 border-[#222228] hover:bg-[#121317]'
-                  }`}
+                  className={`w-full text-left p-4 rounded-xl flex flex-col transition-all border relative group cursor-pointer ${isSelected
+                      ? 'bg-[#181a1f] border-[#333] shadow-md'
+                      : 'bg-[#121317]/30 border-[#222228] hover:bg-[#121317]'
+                    }`}
                 >
-                  <button 
+                  <button
                     onClick={(e) => handleDeleteSession(s, e)}
                     className="absolute top-3 right-3 text-zinc-600 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-black/20"
                   >
@@ -551,42 +631,40 @@ export default function GhostFlowDashboard() {
                   </button>
 
                   <div className="flex items-center justify-between mb-2 pr-6">
-                    <span className={`text-[9px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider ${
-                      s.mode === 'expert' 
-                      ? 'bg-teal-500/10 text-teal-400 border-teal-500/20' 
-                      : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
-                    }`}>
+                    <span className={`text-[9px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider ${s.mode === 'expert'
+                        ? 'bg-teal-500/10 text-teal-400 border-teal-500/20'
+                        : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
+                      }`}>
                       {s.mode}
                     </span>
                     <span className="text-[10px] text-zinc-500 font-mono">
                       {formatTime(s.duration_seconds)}
                     </span>
                   </div>
-                  
+
                   <h3 className={`text-[13px] font-semibold leading-snug mb-1 ${isSelected ? 'text-zinc-200' : 'text-zinc-400'}`}>
                     {s.title}
                   </h3>
-                  
+
                   <p className="text-[11px] text-zinc-500 line-clamp-2 leading-relaxed">
                     {s.description}
                   </p>
-                  
+
                   {isSelected && s.activities.length > 0 && (
                     <div className="mt-3.5 pt-3 border-t border-[#222228] space-y-1.5 max-h-48 overflow-y-auto scrollbar-hide">
                       <div className="text-[9px] text-zinc-500 uppercase tracking-widest mb-1.5 font-bold">Langkah Aktivitas</div>
                       {s.activities.map((act, i) => (
-                        <div 
+                        <div
                           key={act.activity_id}
                           onClick={(e) => { e.stopPropagation(); setCurrentStep(i); }}
-                          className={`px-2.5 py-1.5 rounded font-mono text-[11px] flex items-center justify-between transition-colors ${
-                            currentStep === i 
-                            ? 'bg-teal-500/10 text-teal-400 border border-teal-500/20' 
-                            : 'hover:bg-black/30 text-zinc-500'
-                          }`}
+                          className={`px-2.5 py-1.5 rounded font-mono text-[11px] flex items-center justify-between transition-colors ${currentStep === i
+                              ? 'bg-teal-500/10 text-teal-400 border border-teal-500/20'
+                              : 'hover:bg-black/30 text-zinc-500'
+                            }`}
                         >
                           <span className="truncate pr-2">{act.window_title || act.description}</span>
                           <span className="text-[9px] text-zinc-600 flex-shrink-0">
-                            {new Date(act.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                            {new Date(act.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                           </span>
                         </div>
                       ))}
@@ -601,27 +679,28 @@ export default function GhostFlowDashboard() {
 
         {/* --- Center Morphic Inspector --- */}
         <div className="flex-1 bg-[#0f1115] p-8 flex flex-col overflow-y-auto scrollbar-hide">
-          
+
           {currentSession ? (
             <>
               <div className="flex items-center justify-between mb-6 flex-shrink-0">
-                 <div className="flex flex-col">
-                   <h2 className="text-lg font-medium text-zinc-100 flex items-center">
-                     Morphic Workspace Inspector
-                     {activeActivity && (
-                       <span className="ml-4 px-2.5 py-0.5 text-[10px] bg-[#181a1f] text-zinc-400 rounded-lg border border-[#2a2a32] font-mono">
-                         {activeActivity.activity_type || activeActivity.type || 'IDLE'}
-                       </span>
-                     )}
-                   </h2>
-                   <p className="text-[12px] text-zinc-500 mt-1 font-mono">{currentSession.title} ({currentSession.activities.length} logs)</p>
-                 </div>
+                <div className="flex flex-col">
+                  <h2 className="text-lg font-medium text-zinc-100 flex items-center">
+                    Morphic Workspace Inspector
+                    {activeActivity && (
+                      <span className="ml-4 px-2.5 py-0.5 text-[10px] bg-[#181a1f] text-zinc-400 rounded-lg border border-[#2a2a32] font-mono">
+                        {activeActivity.activity_type || activeActivity.type || 'IDLE'}
+                      </span>
+                    )}
+                  </h2>
+                  <p className="text-[12px] text-zinc-500 mt-1 font-mono">{currentSession.title} ({currentSession.activities.length} logs)</p>
+                  <p>hallo test</p>
+                </div>
               </div>
-              
+
               <div className="flex-1 relative min-h-[400px]">
                 <AnimatePresence mode="wait">
                   {activeActivity ? (
-                    <motion.div 
+                    <motion.div
                       key={activeActivity.activity_id}
                       initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} transition={transition}
                       className="w-full h-full min-h-[400px] flex items-center justify-center bg-[#181a1f] rounded-2xl border border-[#222228] p-8 shadow-sm"
@@ -629,31 +708,31 @@ export default function GhostFlowDashboard() {
                       <div className="max-w-lg w-full flex flex-col items-center text-center">
                         <div className="w-20 h-20 bg-[#212329] rounded-2xl flex items-center justify-center mb-6 border border-[#2a2a32] shadow-lg relative">
                           {activeActivity.app_class?.includes('Chrome') || activeActivity.layout_state?.focused_app?.includes('Chrome') ? <Search className="w-10 h-10 text-sky-400" /> :
-                           activeActivity.app_class?.includes('Docker') || activeActivity.layout_state?.focused_app?.includes('Docker') ? <Server className="w-10 h-10 text-indigo-400" /> :
-                           activeActivity.app_class?.includes('VS Code') || activeActivity.layout_state?.focused_app?.includes('VS Code') ? <FileCode className="w-10 h-10 text-teal-400" /> :
-                           activeActivity.app_class?.includes('Terminal') || activeActivity.layout_state?.focused_app?.includes('Terminal') ? <Terminal className="w-10 h-10 text-zinc-400" /> :
-                           activeActivity.app_class?.includes('Figma') || activeActivity.layout_state?.focused_app?.includes('Figma') ? <Layout className="w-10 h-10 text-purple-400" /> :
-                           activeActivity.app_class?.includes('Git') ? <CheckCircle className="w-10 h-10 text-orange-400" /> :
-                           <Activity className="w-10 h-10 text-zinc-500" />}
-                           
-                           {isRecording && (
-                             <span className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full animate-ping"></span>
-                           )}
+                            activeActivity.app_class?.includes('Docker') || activeActivity.layout_state?.focused_app?.includes('Docker') ? <Server className="w-10 h-10 text-indigo-400" /> :
+                              activeActivity.app_class?.includes('VS Code') || activeActivity.layout_state?.focused_app?.includes('VS Code') ? <FileCode className="w-10 h-10 text-teal-400" /> :
+                                activeActivity.app_class?.includes('Terminal') || activeActivity.layout_state?.focused_app?.includes('Terminal') ? <Terminal className="w-10 h-10 text-zinc-400" /> :
+                                  activeActivity.app_class?.includes('Figma') || activeActivity.layout_state?.focused_app?.includes('Figma') ? <Layout className="w-10 h-10 text-purple-400" /> :
+                                    activeActivity.app_class?.includes('Git') ? <CheckCircle className="w-10 h-10 text-orange-400" /> :
+                                      <Activity className="w-10 h-10 text-zinc-500" />}
+
+                          {isRecording && (
+                            <span className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full animate-ping"></span>
+                          )}
                         </div>
-                        
+
                         <h3 className="text-xl font-medium text-zinc-100 mb-2">{activeActivity.app_class || activeActivity.layout_state?.focused_app || 'Application View'}</h3>
                         <p className="text-zinc-400 mb-8 text-[13px] leading-relaxed font-mono max-w-md">{activeActivity.window_title || activeActivity.description}</p>
-                        
+
                         <div className="w-full bg-[#121317] rounded-xl p-5 text-left border border-[#222228] shadow-inner font-mono text-[13px]">
                           <div className="text-[10px] text-zinc-500 mb-4 font-bold uppercase tracking-wider">Live Metrics Data</div>
-                          
+
                           <div className="grid grid-cols-2 gap-4 text-zinc-300">
                             <div className="flex items-center"><Activity className="w-4 h-4 mr-2 text-amber-500/70" /> Type: {activeActivity.activity_type || activeActivity.type}</div>
-                            <div className="flex items-center"><Clock className="w-4 h-4 mr-2 text-zinc-500" /> Duration: {activeActivity.duration_ms ? `${(activeActivity.duration_ms/1000).toFixed(1)}s` : 'Background'}</div>
+                            <div className="flex items-center"><Clock className="w-4 h-4 mr-2 text-zinc-500" /> Duration: {activeActivity.duration_ms ? `${(activeActivity.duration_ms / 1000).toFixed(1)}s` : 'Background'}</div>
                             <div className="flex items-center"><Layout className="w-4 h-4 mr-2 text-indigo-400" /> Mode: {activeActivity.layout_state?.screen_mode}</div>
                             <div className="flex items-center"><Sparkles className="w-4 h-4 mr-2 text-teal-400" /> Ratio: {activeActivity.layout_state?.split_ratio || '100:0'}</div>
                           </div>
-                          
+
                           {activeActivity.details && (
                             <div className="mt-4">
                               <div className="text-[10px] text-zinc-500 mb-2 font-bold uppercase tracking-wider">Payload Context</div>
@@ -670,7 +749,7 @@ export default function GhostFlowDashboard() {
                       <Folder className="w-12 h-12 text-zinc-800 mb-4" />
                       {currentSession.activities.length === 0 ? (
                         <span>
-                          Sesi ini masih kosong.<br/>
+                          Sesi ini masih kosong.<br />
                           Nyalakan <b>"Perekaman Telemetri Kognitif"</b> di bagian atas untuk merekam kegiatan koding Anda secara real-time.
                         </span>
                       ) : (
@@ -685,7 +764,7 @@ export default function GhostFlowDashboard() {
             <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 font-mono text-sm border border-dashed border-[#222228] rounded-2xl p-8 text-center">
               <Sparkles className="w-12 h-12 text-zinc-800 mb-4" />
               <span>
-                Tidak ada sesi aktif.<br/>
+                Tidak ada sesi aktif.<br />
                 Silakan klik tombol <b>"+ Sesi Baru"</b> di sidebar kiri untuk membuat sesi pencatatan koding!
               </span>
             </div>
@@ -695,10 +774,10 @@ export default function GhostFlowDashboard() {
 
         {/* --- Right Cognitive Advisor Panel (Fully Optional AI Switch) --- */}
         <div className="w-[320px] flex-shrink-0 border-l border-[#222228] bg-[#0a0a0c] flex flex-col hidden lg:flex z-10">
-          
+
           <AnimatePresence mode="wait">
             {isAiActive ? (
-              <motion.div 
+              <motion.div
                 key="ai-active"
                 initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}
                 className="flex-1 flex flex-col overflow-hidden"
@@ -735,15 +814,137 @@ export default function GhostFlowDashboard() {
                     <BrainCircuit className="w-3.5 h-3.5 mr-2 text-teal-400" />
                     AI Cognitive Reasoning
                   </h3>
-                  
-                  {currentInsight ? (
-                    <div className="flex-1 flex flex-col justify-between">
-                      <p className="text-zinc-300 text-[13px] leading-relaxed font-mono border-l-2 border-indigo-500/50 pl-4 py-1">
-                        {currentInsight.insight}
-                      </p>
-                      <div className="flex items-center justify-between py-3 border-t border-[#222228] mt-6 flex-shrink-0">
-                        <span className="text-[11px] text-zinc-500 font-medium">Confidence Score</span>
-                        <span className="text-[13px] font-mono text-teal-400 font-bold">{Math.round(currentInsight.reasoning_confidence * 100)}%</span>
+
+                  {activeActivity ? (
+                    <div className="space-y-5">
+                      {/* Mindset Analysis */}
+                      <div className="space-y-1.5">
+                        <span className="text-[9px] text-zinc-500 uppercase tracking-widest font-mono">Pola Pikir Developer</span>
+                        <div className="flex items-center space-x-2">
+                          {(() => {
+                            let badgeColor = "bg-teal-500/10 text-teal-400 border-teal-500/20";
+                            let icon = <BrainCircuit className="w-3.5 h-3.5" />;
+                            let text = "Coding Mode";
+                            
+                            const actType = activeActivity.activity_type || activeActivity.type || "";
+                            if (actType.includes("research")) {
+                              badgeColor = "bg-sky-500/10 text-sky-400 border-sky-500/20";
+                              icon = <Search className="w-3.5 h-3.5" />;
+                              text = "Riset & Analisis";
+                            } else if (actType.includes("terminal")) {
+                              badgeColor = "bg-zinc-500/10 text-zinc-400 border-zinc-500/20";
+                              icon = <Terminal className="w-3.5 h-3.5" />;
+                              text = "Runtime & Debug";
+                            } else if (actType.includes("document")) {
+                              badgeColor = "bg-amber-500/10 text-amber-400 border-amber-500/20";
+                              icon = <Clock className="w-3.5 h-3.5" />;
+                              text = "Analisis Spesifikasi";
+                            } else if (actType.includes("resolution") || actType.includes("fix")) {
+                              badgeColor = "bg-rose-500/10 text-rose-400 border-rose-500/20 shadow-[0_0_10px_rgba(244,63,94,0.05)]";
+                              icon = <AlertCircle className="w-3.5 h-3.5 animate-pulse" />;
+                              text = "Pemecahan Masalah (Fix)";
+                            }
+                            
+                            return (
+                              <div className={`px-2.5 py-1 rounded border font-mono text-[11px] flex items-center space-x-1.5 ${badgeColor}`}>
+                                {icon}
+                                <span>{text}</span>
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      </div>
+
+                      {/* Layout Organization Score */}
+                      <div className="space-y-2">
+                        <div className="flex justify-between items-center text-[9px] text-zinc-500 uppercase tracking-widest font-mono">
+                          <span>Kerapian Tata Letak</span>
+                          <span className={
+                            activeActivity.layout_state?.organization_score?.includes("Acak-acakan") 
+                            ? "text-rose-400" 
+                            : "text-teal-400"
+                          }>
+                            {activeActivity.layout_state?.organization_score || "Teratur"}
+                          </span>
+                        </div>
+                        {(() => {
+                          const org = activeActivity.layout_state?.organization_score || "";
+                          let percent = 100;
+                          let barColor = "bg-teal-500";
+                          if (org.includes("Acak-acakan")) {
+                            percent = 45;
+                            barColor = "bg-rose-500";
+                          } else if (org.includes("Split-Screen")) {
+                            percent = 90;
+                            barColor = "bg-indigo-400";
+                          }
+                          return (
+                            <div className="space-y-1">
+                              <div className="w-full bg-[#121317] h-2 rounded-full overflow-hidden border border-[#222228]">
+                                <div className={`h-full ${barColor} rounded-full`} style={{ width: `${percent}%` }}></div>
+                              </div>
+                              <span className="text-[10px] text-zinc-500 leading-relaxed font-mono">
+                                {org.includes("Acak-acakan") 
+                                  ? "Workspace tumpang tindih. Fokus terdistorsi oleh tumpukan window."
+                                  : org.includes("Split-Screen")
+                                  ? "Tata letak side-by-side terstruktur. Mempercepat integrasi referensi."
+                                  : "Fokus penuh satu window. Efektif untuk coding intensif."}
+                              </span>
+                            </div>
+                          );
+                        })()}
+                      </div>
+
+                      {/* AI Mentor Mentoring */}
+                      <div className="space-y-1.5">
+                        <span className="text-[9px] text-zinc-500 uppercase tracking-widest font-mono">Penjelasan Kognitif AI</span>
+                        <div className="text-zinc-300 text-[12px] leading-relaxed font-mono bg-[#121317]/50 border border-[#222228] p-3.5 rounded-xl">
+                          {(() => {
+                            const actType = activeActivity.activity_type || activeActivity.type || "";
+                            const app = activeActivity.app_class || activeActivity.layout_state?.focused_app || "";
+                            const title = activeActivity.window_title || activeActivity.description || "";
+                            
+                            if (actType.includes("document")) {
+                              return `Senior developer sedang membuka dokumen spesifikasi. Ini menunjukkan tindakan terencana untuk memahami requirement fungsionalitas sebelum melakukan perubahan kode, menghindari trial-and-error yang sia-sia.`;
+                            } else if (actType.includes("resolution") || actType.includes("fix")) {
+                              return `Sistem mendeteksi pemecahan masalah kognitif! Developer menemui error di logs server, membuka Chrome untuk menganalisis, mengedit file konfigurasi/sumber kode, dan berhasil membetulkan kesalahan tersebut secara instan.`;
+                            } else if (actType.includes("code_edit")) {
+                              return `Mengedit berkas kode aktif di editor ${app}. Tindakan ini difokuskan pada implementasi baris instruksi baru. Pola perubahan terdeteksi sebagai kontribusif.`;
+                            } else if (actType.includes("terminal")) {
+                              return `Melakukan eksekusi terminal shell. Developer sedang memantau output compiler atau me-restart runtime web server untuk meninjau perubahan terbaru.`;
+                            } else if (actType.includes("research")) {
+                              return `Sedang melakukan pencarian referensi teknis di browser. Membaca dokumentasi API untuk memverifikasi sintaksis atau parameter fungsi yang dibutuhkan.`;
+                            }
+                            return `Developer berinteraksi dengan ${app} (${title}). Pola tindakan teratur dan terarah dalam sesi ${currentSession.mode}.`;
+                          })()}
+                        </div>
+                      </div>
+
+                      {/* Document References / Edited File */}
+                      <div className="space-y-1.5 pt-2 border-t border-[#222228]">
+                        <span className="text-[9px] text-zinc-500 uppercase tracking-widest font-mono">Sumber Rujukan / Berkas</span>
+                        <div className="bg-[#121317] border border-[#222228] p-3 rounded-lg flex items-center justify-between">
+                          <div className="flex items-center space-x-2 truncate">
+                            {activeActivity.activity_type?.includes("document") ? (
+                              <FileCode className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+                            ) : (
+                              <FileCode className="w-3.5 h-3.5 text-teal-400 flex-shrink-0" />
+                            )}
+                            <span className="text-[11px] font-mono text-zinc-300 truncate">
+                              {(() => {
+                                const details = activeActivity.details;
+                                if (details && details.filename) return details.filename;
+                                if (details && details.document_name) return details.document_name;
+                                if (details && details.document_title) return details.document_title;
+                                if (details && details.tab_title) return details.tab_title;
+                                return "Tidak ada berkas spesifik";
+                              })()}
+                            </span>
+                          </div>
+                          <span className="text-[9px] font-mono text-zinc-500 uppercase tracking-wider pl-2 flex-shrink-0">
+                            {activeActivity.activity_type?.includes("document") ? "DOCS" : "CODE"}
+                          </span>
+                        </div>
                       </div>
                     </div>
                   ) : (
@@ -755,42 +956,48 @@ export default function GhostFlowDashboard() {
 
                 {/* Assistant Chatbot interface */}
                 <div className="h-[40%] bg-[#0f1115] flex flex-col">
-                  <div className="px-4 py-3 border-b border-[#222228] flex items-center bg-[#121317] justify-between flex-shrink-0">
+                  <div className="px-4 py-2 border-b border-[#222228] flex items-center bg-[#121317] justify-between flex-shrink-0">
                     <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest flex items-center">
                       <MessageSquare className="w-3.5 h-3.5 mr-2 text-zinc-500" />
                       Cognitive Chat
                     </span>
+                    <input
+                      type="password"
+                      value={geminiKey}
+                      onChange={e => handleSaveGeminiKey(e.target.value)}
+                      placeholder="Gemini API Key..."
+                      className="bg-[#181a1f] border border-[#222228] rounded py-1 px-2 text-[9px] font-mono text-zinc-400 focus:outline-none focus:border-teal-500/50 w-32"
+                    />
                   </div>
-                  
+
                   <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-hide">
                     {chatMessages.map((msg, i) => (
                       <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                        <div className={`max-w-[85%] p-3 text-[12px] leading-relaxed rounded-xl ${
-                          msg.role === 'user' 
-                            ? 'bg-teal-950/20 border border-teal-500/10 text-teal-100 font-mono' 
+                        <div className={`max-w-[85%] p-3 text-[12px] leading-relaxed rounded-xl ${msg.role === 'user'
+                            ? 'bg-teal-950/20 border border-teal-500/10 text-teal-100 font-mono'
                             : 'bg-[#181a1f] border border-[#222228] text-zinc-400 font-mono'
-                        }`}>
+                          }`}>
                           {msg.text}
                         </div>
                       </div>
                     ))}
                     <div ref={chatEndRef} />
                   </div>
-                  
+
                   <div className="p-3 bg-[#121317] border-t border-[#222228] flex-shrink-0">
-                    <form 
+                    <form
                       onSubmit={e => { e.preventDefault(); handleSendMessage(chatInput); }}
                       className="relative flex items-center"
                     >
-                      <input 
-                        type="text" 
+                      <input
+                        type="text"
                         value={chatInput}
                         onChange={e => setChatInput(e.target.value)}
-                        placeholder="Tanyakan pola kerja expert..." 
+                        placeholder="Tanyakan pola kerja expert..."
                         className="w-full bg-[#181a1f] border border-[#222228] rounded-lg py-2 pl-3 pr-9 text-[12px] font-mono text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-zinc-600 transition-colors"
                       />
-                      <button 
-                        type="submit" 
+                      <button
+                        type="submit"
                         disabled={!chatInput.trim()}
                         className="absolute right-2 p-1.5 text-zinc-500 hover:text-zinc-300 disabled:opacity-0 transition-colors"
                       >
@@ -801,14 +1008,14 @@ export default function GhostFlowDashboard() {
                 </div>
               </motion.div>
             ) : (
-              <motion.div 
+              <motion.div
                 key="ai-inactive"
                 initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}
                 className="flex-1 flex flex-col items-center justify-center p-8 text-center text-zinc-600 font-mono text-xs"
               >
                 <Sparkles className="w-12 h-12 text-zinc-800 mb-4" />
                 <span>
-                  Asisten Kognitif AI Nonaktif.<br/><br/>
+                  Asisten Kognitif AI Nonaktif.<br /><br />
                   Aktifkan switch <b>"Asisten Kognitif AI"</b> di kanan atas untuk menyalakan cognitive reasoning, signals, dan chatbot mentor.
                 </span>
               </motion.div>
@@ -823,14 +1030,14 @@ export default function GhostFlowDashboard() {
       <AnimatePresence>
         {showNewSessionModal && (
           <div className="fixed inset-0 bg-black/70 backdrop-blur-md flex items-center justify-center z-50 p-4">
-            <motion.div 
-              initial={{ scale: 0.95, opacity: 0 }} 
-              animate={{ scale: 1, opacity: 1 }} 
-              exit={{ scale: 0.95, opacity: 0 }} 
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
               transition={transition}
               className="bg-[#0f1115] border border-[#222228] rounded-2xl max-w-md w-full p-6 shadow-2xl relative"
             >
-              <button 
+              <button
                 onClick={() => setShowNewSessionModal(false)}
                 className="absolute top-4 right-4 text-zinc-500 hover:text-zinc-200 transition-colors"
               >
@@ -845,21 +1052,21 @@ export default function GhostFlowDashboard() {
               <div className="space-y-4 font-mono text-xs">
                 <div>
                   <label className="block text-zinc-500 mb-1.5">JUDUL SESI</label>
-                  <input 
-                    type="text" 
+                  <input
+                    type="text"
                     value={newTitle}
                     onChange={e => setNewTitle(e.target.value)}
-                    placeholder="Contoh: Web E-Commerce - Payment Gateway" 
+                    placeholder="Contoh: Web E-Commerce - Payment Gateway"
                     className="w-full bg-[#181a1f] border border-[#222228] rounded-lg py-2 px-3 text-zinc-200 focus:outline-none focus:border-zinc-600 transition-colors"
                   />
                 </div>
 
                 <div>
                   <label className="block text-zinc-500 mb-1.5">DESKRIPSI SINGKAT</label>
-                  <textarea 
+                  <textarea
                     value={newDesc}
                     onChange={e => setNewDesc(e.target.value)}
-                    placeholder="Contoh: Mengerjakan checkout API menggunakan Midtrans" 
+                    placeholder="Contoh: Mengerjakan checkout API menggunakan Midtrans"
                     rows={3}
                     className="w-full bg-[#181a1f] border border-[#222228] rounded-lg py-2 px-3 text-zinc-200 focus:outline-none focus:border-zinc-600 transition-colors resize-none"
                   />
@@ -868,7 +1075,7 @@ export default function GhostFlowDashboard() {
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-zinc-500 mb-1.5">MODE SESI</label>
-                    <select 
+                    <select
                       value={newMode}
                       onChange={e => setNewMode(e.target.value as 'expert' | 'junior')}
                       className="w-full bg-[#181a1f] border border-[#222228] rounded-lg py-2 px-3 text-zinc-200 focus:outline-none focus:border-zinc-600 cursor-pointer"
@@ -880,24 +1087,24 @@ export default function GhostFlowDashboard() {
 
                   <div>
                     <label className="block text-zinc-500 mb-1.5">WORKSPACE DIRECTORY</label>
-                    <input 
-                      type="text" 
+                    <input
+                      type="text"
                       value={newProjDir}
                       onChange={e => setNewProjDir(e.target.value)}
-                      placeholder="Folder Path (default: .)" 
+                      placeholder="Folder Path (default: .)"
                       className="w-full bg-[#181a1f] border border-[#222228] rounded-lg py-2 px-3 text-zinc-200 focus:outline-none focus:border-zinc-600 transition-colors"
                     />
                   </div>
                 </div>
 
                 <div className="pt-4 flex space-x-3 justify-end">
-                  <button 
+                  <button
                     onClick={() => setShowNewSessionModal(false)}
                     className="px-4 py-2 border border-[#222228] text-zinc-400 hover:text-zinc-200 rounded-lg"
                   >
                     Batal
                   </button>
-                  <button 
+                  <button
                     onClick={handleCreateNewSession}
                     className="px-4 py-2 bg-teal-500 text-black hover:bg-teal-400 font-bold rounded-lg transition-colors"
                   >
