@@ -3,16 +3,17 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Terminal, FileCode, CheckCircle, Database, Ghost,
+  Terminal, FileCode, CheckCircle, Ghost,
   MessageSquare, Layout, Server, AlertCircle,
-  Search, X, Play, Zap, BrainCircuit, Activity, Power, Clock,
-  Folder, User, Cpu, Sparkles, ChevronRight, History, Plus, Trash2, Sliders, ToggleLeft, ToggleRight
+  Search, X, BrainCircuit, Activity, Power, Clock,
+  Folder, User, Cpu, Sparkles, ChevronRight, Plus, Trash2,
+  Upload, GraduationCap, Briefcase
 } from 'lucide-react';
 
-// Tauri API
 import { invoke } from '@tauri-apps/api/core';
-
 import rawSessionData from '../data/ghostflow_session.json';
+import JuniorDashboard from './components/JuniorDashboard';
+import LoginScreen from './components/LoginScreen';
 
 type TimelineActivity = {
   activity_id: string;
@@ -53,28 +54,57 @@ type SessionItem = {
   };
 };
 
+type AuthUser = {
+  name: string;
+  role: 'expert' | 'junior';
+};
+
 export default function GhostFlowDashboard() {
-  // --- Sessions & History Management (ChatGPT/Gemini-style) ---
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+
+  // ─── Mode: 'expert' | 'junior' ───
+  const [activeMode, setActiveMode] = useState<'expert' | 'junior'>('expert');
+
+  useEffect(() => {
+    const saved = localStorage.getItem('ghostflow_user');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        setAuthUser(parsed);
+        setActiveMode(parsed.role);
+      } catch(e) {}
+    }
+  }, []);
+
+  // ─── Expert Sessions ───
   const [sessions, setSessions] = useState<SessionItem[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string>('');
   const [currentStep, setCurrentStep] = useState(0);
 
-  // Cognitive Telemetry & AI Assistant Switches
-  const [isRecording, setIsRecording] = useState(false); // Telemetry On/Off
-  const [isAiActive, setIsAiActive] = useState(true);    // AI Mentor On/Off
+  // ─── Junior Sessions ───
+  const [juniorSessions, setJuniorSessions] = useState<any[]>([]);
+  const [selectedJuniorSessionId, setSelectedJuniorSessionId] = useState<string>('');
+
+  // ─── Telemetry ───
+  const [isRecording, setIsRecording] = useState(false);
   const [duration, setDuration] = useState(0);
   const [inTauri, setInTauri] = useState(false);
 
-  // Sesi Baru Modal/Form State
+  // ─── Expert New Session Modal ───
   const [showNewSessionModal, setShowNewSessionModal] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newDesc, setNewDesc] = useState('');
-  const [newMode, setNewMode] = useState<'expert' | 'junior'>('expert');
   const [newProjDir, setNewProjDir] = useState('/home/piowarior/perkuliahan/GhostFlow-AI');
 
-  // Chat/Mentor States
+  // ─── Export Modal ───
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportingSession, setExportingSession] = useState<SessionItem | null>(null);
+  const [exportExpertName, setExportExpertName] = useState('');
+  const [exportLoading, setExportLoading] = useState(false);
+
+  // ─── Expert Chat ───
   const [chatMessages, setChatMessages] = useState([
-    { role: 'assistant', text: `Halo! Saya Ghost Cognitive Mentor. Hubungkan telemetri untuk merekam kegiatan koding Anda secara real-time, atau telusuri reasoning kognitif expert dari riwayat sesi.` }
+    { role: 'assistant', text: 'Halo Expert! Saya Ghost Cognitive Mentor. Rekam sesi Anda dan ekspor ke Junior Developer.' }
   ]);
   const [chatInput, setChatInput] = useState('');
   const [geminiKey, setGeminiKey] = useState('');
@@ -142,7 +172,7 @@ export default function GhostFlowDashboard() {
     if (isRecording && inTauri && selectedSessionId) {
       interval = setInterval(() => {
         pollLiveTelemetryAndAppend();
-      }, 2000);
+      }, 6000);
     }
     return () => clearInterval(interval);
   }, [isRecording, inTauri, selectedSessionId]);
@@ -152,16 +182,21 @@ export default function GhostFlowDashboard() {
       const files: any[] = await invoke('load_all_sessions');
       if (files && files.length > 0) {
         const loaded: SessionItem[] = files.map((f: any) => ({
-          id: f.session_metadata.session_id,
-          title: f.session_metadata.title,
-          description: f.session_metadata.description || 'Perekaman telemetri kognitif...',
-          mode: f.session_metadata.mode as 'expert' | 'junior',
-          timestamp: f.session_metadata.created_at,
-          project_dir: f.session_metadata.project_dir || '.',
-          total_activities: f.timeline_activities.length,
-          duration_seconds: f.session_metadata.duration_seconds,
-          activities: f.timeline_activities,
-          cognitive_signals: f.cognitive_signals
+          id: f.session_metadata?.session_id || `session-${Date.now()}`,
+          title: f.session_metadata?.title || 'Untitled Session',
+          description: f.session_metadata?.description || 'Perekaman telemetri kognitif...',
+          mode: (f.session_metadata?.mode as 'expert' | 'junior') || 'expert',
+          timestamp: f.session_metadata?.created_at || new Date().toISOString(),
+          project_dir: f.session_metadata?.project_dir || '.',
+          total_activities: (f.timeline_activities || []).length,
+          duration_seconds: f.session_metadata?.duration_seconds || 0,
+          activities: f.timeline_activities || [],
+          cognitive_signals: f.cognitive_signals || {
+            fast_file_switch_count: 0,
+            research_phase_count: 0,
+            retry_pattern_count: 0,
+            total_app_switches: 0
+          }
         }));
         const uniqueSessions = loaded.filter(
           (session, index, self) =>
@@ -290,8 +325,8 @@ export default function GhostFlowDashboard() {
     const newSession: SessionItem = {
       id: `session-${Date.now()}`,
       title: newTitle,
-      description: newDesc || `Sesi pencatatan mode ${newMode}`,
-      mode: newMode,
+      description: newDesc || "Sesi pencatatan mode expert",
+      mode: 'expert',
       timestamp: new Date().toISOString(),
       project_dir: newProjDir || '.',
       total_activities: 0,
@@ -313,7 +348,6 @@ export default function GhostFlowDashboard() {
     // Reset Form
     setNewTitle('');
     setNewDesc('');
-    setNewMode('expert');
     setNewProjDir('.');
     setShowNewSessionModal(false);
 
@@ -321,6 +355,44 @@ export default function GhostFlowDashboard() {
       role: 'assistant',
       text: `Sesi Baru "${newTitle}" berhasil dibuat! Aktifkan "Perekaman Telemetri Kognitif" di atas untuk merekam kegiatan koding Anda.`
     }]);
+  };
+
+  // ─── Export Session for Junior ───
+  const handleExportSession = async () => {
+    if (!exportingSession || !authUser) {
+      alert('Sesi atau profil tidak ditemukan!'); return;
+    }
+    setExportLoading(true);
+    const expertName = authUser.name;
+    try {
+      if (inTauri) {
+        await invoke('export_session_for_junior', {
+          title: exportingSession.title,
+          expertName: expertName
+        });
+      }
+      // Also persist to localStorage for frontend access
+      const exportKey = 'ghostflow_exports';
+      const prev = JSON.parse(localStorage.getItem(exportKey) || '[]');
+      const exportEntry = {
+        id: exportingSession.id,
+        title: exportingSession.title,
+        description: exportingSession.description,
+        expertName: expertName,
+        mode: exportingSession.mode,
+        timestamp: exportingSession.timestamp,
+        duration_seconds: exportingSession.duration_seconds,
+        activities: exportingSession.activities,
+        cognitive_signals: exportingSession.cognitive_signals,
+      };
+      const updated = [exportEntry, ...prev.filter((s: any) => s.id !== exportEntry.id)];
+      localStorage.setItem(exportKey, JSON.stringify(updated));
+      setChatMessages(prev => [...prev, { role: 'assistant', text: `✅ Sesi "${exportingSession.title}" berhasil di-export sebagai Expert ${expertName}! Junior Developer kini bisa belajar dari sesi ini.` }]);
+      setShowExportModal(false); setExportingSession(null);
+    } catch (e) {
+      alert('Gagal export: ' + e);
+    }
+    setExportLoading(false);
   };
 
   // --- Delete Session ---
@@ -390,7 +462,9 @@ export default function GhostFlowDashboard() {
         // START
         await invoke('start_recording', {
           mode: currentSession.mode,
-          projectDir: currentSession.project_dir
+          projectDir: currentSession.project_dir,
+          existingActivities: currentSession.activities.length > 0 ? currentSession.activities : null,
+          existingCognitiveSignals: currentSession.cognitive_signals ? currentSession.cognitive_signals : null
         });
         setIsRecording(true);
         setDuration(0);
@@ -501,101 +575,124 @@ Tugas Anda adalah menjawab pertanyaan user berdasarkan log aktivitas kognitif ex
 
   const transition = { ease: [0.2, 0.8, 0.2, 1] as [number, number, number, number], duration: 0.4 };
 
+  const handleLogin = (user: AuthUser) => {
+    localStorage.setItem('ghostflow_user', JSON.stringify(user));
+    setAuthUser(user);
+    setActiveMode(user.role);
+  };
+
+  if (!authUser) {
+    return <LoginScreen onLogin={handleLogin} />;
+  }
+
   return (
     <div className="min-h-screen h-screen bg-[#0a0a0c] text-zinc-200 font-sans overflow-hidden flex flex-col selection:bg-teal-500/30">
 
-      {/* --- Top Control Bar (Clean Switches) --- */}
-      <header className="h-[76px] flex-shrink-0 border-b border-[#222228] bg-[#0a0a0c]/80 backdrop-blur-xl px-6 flex items-center justify-between z-20">
-        <div className="flex items-center space-x-6">
-          <div className="flex items-center space-x-2.5 text-zinc-100">
-            <div className="w-9 h-9 bg-zinc-900 border border-zinc-800 rounded-xl flex items-center justify-center relative">
-              <Ghost className="w-5 h-5 text-teal-400" />
-              {isRecording && <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-red-500 rounded-full animate-ping"></span>}
-            </div>
-            <div className="flex flex-col">
-              <span className="font-bold text-sm tracking-tight">GhostFlow AI</span>
-              <span className="text-[10px] text-zinc-500 font-mono tracking-wider">TELEMETRY ENGINE</span>
-            </div>
+      {/* ── Top Header ── */}
+      <header className="h-[64px] flex-shrink-0 border-b border-[#222228] bg-[#0a0a0c]/90 backdrop-blur-xl px-5 flex items-center justify-between z-20">
+        {/* Logo */}
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 bg-zinc-900 border border-zinc-800 rounded-xl flex items-center justify-center relative">
+            <Ghost className="w-4.5 h-4.5 w-4 text-teal-400" />
+            {isRecording && <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-red-500 rounded-full animate-ping" />}
           </div>
-          <div className="h-7 w-[1px] bg-[#222228]"></div>
-
-          {/* SEPARATED SWITCH 1: TELEMETRY POLLER ON/OFF */}
-          {currentSession && (
-            <div className="flex items-center space-x-4 bg-[#121317] border border-[#222228] p-1.5 rounded-xl shadow-inner">
-              <button
-                onClick={toggleRecording}
-                className={`flex items-center px-4 py-1.5 rounded-lg font-bold text-xs transition-all ${isRecording
-                    ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20 shadow-[0_0_15px_rgba(244,63,94,0.1)]'
-                    : 'bg-teal-500 text-black hover:bg-teal-400'
-                  }`}
-              >
-                <Power className="w-4 h-4 mr-2" />
-                {isRecording ? 'MATIKAN TELEMETRI' : 'AKTIFKAN TELEMETRI'}
-              </button>
-
-              <div className="flex items-center px-2 space-x-3 text-[12px] font-mono border-l border-[#222228] pl-4">
-                {isRecording ? (
-                  <>
-                    <div className="flex items-center text-rose-400">
-                      <span className="relative flex h-2 w-2 mr-2">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
-                        <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500"></span>
-                      </span>
-                      RECORDING
-                    </div>
-                    <div className="text-zinc-600">|</div>
-                    <div className="text-zinc-300 flex items-center"><Clock className="w-3.5 h-3.5 mr-1 text-zinc-500" /> {formatTime(duration)}</div>
-                    <div className="text-zinc-600">|</div>
-                    <div className="text-teal-400 flex items-center"><Activity className="w-3.5 h-3.5 mr-1 text-teal-500" /> {currentSession?.activities.length || 0} logs</div>
-                  </>
-                ) : (
-                  <div className="text-zinc-500 flex items-center">
-                    <div className="w-2 h-2 rounded-full bg-zinc-700 mr-2"></div> TELEMETRI OFF (CPU 0%)
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* SEPARATED SWITCH 2: AI COGNITIVE MENTOR ON/OFF */}
-        <div className="flex items-center space-x-4">
-          <div className="flex items-center space-x-3 bg-[#121317] border border-[#222228] p-1.5 rounded-xl">
-            <span className="text-xs font-mono text-zinc-400 pl-2">Asisten Kognitif AI</span>
+          <div>
+            <span className="font-bold text-sm tracking-tight text-zinc-100">GhostFlow AI</span>
+            <span className="text-[9px] text-zinc-600 font-mono tracking-wider block">TELEMETRY ENGINE</span>
+          </div>
+          <div className="h-6 w-[1px] bg-[#222228] mx-2" />
+          {/* Mode Tabs */}
+          <div className="flex items-center gap-1 bg-[#121317] border border-[#222228] p-1 rounded-xl">
             <button
-              onClick={() => setIsAiActive(!isAiActive)}
-              className="text-zinc-400 hover:text-zinc-200 transition-colors"
+              onClick={() => setActiveMode('expert')}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                activeMode === 'expert'
+                  ? 'bg-teal-500 text-black shadow-sm'
+                  : 'text-zinc-500 hover:text-zinc-300'
+              }`}
             >
-              {isAiActive ? (
-                <ToggleRight className="w-8 h-8 text-teal-400 cursor-pointer" />
-              ) : (
-                <ToggleLeft className="w-8 h-8 text-zinc-600 cursor-pointer" />
-              )}
+              <Briefcase className="w-3.5 h-3.5" /> Expert
+            </button>
+            <button
+              onClick={() => setActiveMode('junior')}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                activeMode === 'junior'
+                  ? 'bg-violet-500 text-white shadow-sm'
+                  : 'text-zinc-500 hover:text-zinc-300'
+              }`}
+            >
+              <GraduationCap className="w-3.5 h-3.5" /> Junior
             </button>
           </div>
+        </div>
 
-          <div className="px-3 py-1.5 rounded-lg bg-[#121317] border border-[#222228] flex items-center space-x-2 text-xs font-mono text-zinc-400">
-            <Cpu className="w-3.5 h-3.5 text-zinc-500" />
-            <span>Ubuntu Wayland • Live File & Process polling</span>
+        {/* Right side — only show telemetry controls in Expert mode */}
+        <div className="flex items-center gap-3">
+          {activeMode === 'expert' && currentSession && (
+            <div className="flex items-center gap-3 bg-[#121317] border border-[#222228] p-1.5 rounded-xl">
+              <button
+                onClick={toggleRecording}
+                className={`flex items-center px-3 py-1.5 rounded-lg font-bold text-xs transition-all ${
+                  isRecording
+                    ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                    : 'bg-teal-500 text-black hover:bg-teal-400'
+                }`}
+              >
+                <Power className="w-3.5 h-3.5 mr-1.5" />
+                {isRecording ? 'STOP' : 'REC'}
+              </button>
+              {isRecording && (
+                <div className="flex items-center gap-2 text-[11px] font-mono border-l border-[#222228] pl-3">
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500" />
+                  </span>
+                  <span className="text-zinc-400"><Clock className="inline w-3 h-3 mr-0.5 text-zinc-600" />{formatTime(duration)}</span>
+                  <span className="text-teal-400">{currentSession?.activities.length || 0} logs</span>
+                </div>
+              )}
+            </div>
+          )}
+          <div className="px-2.5 py-1.5 rounded-lg bg-[#121317] border border-[#222228] flex items-center gap-1.5 text-[10px] font-mono text-zinc-500">
+            <Cpu className="w-3 h-3" />
+            <span>Wayland</span>
           </div>
         </div>
       </header>
 
-      {/* Workflow DNA Bar at Top */}
-      <div className="w-full h-1 flex items-center bg-[#0a0a0c]">
-        {currentSession?.activities.map((act, i) => (
-          <div key={i} className={`flex-1 h-full transition-all duration-500 ${getPhaseColor(act.phase || 'development', i === currentStep)} mx-[1px] rounded-full ${i === currentStep ? 'opacity-100 shadow-[0_0_8px_rgba(255,255,255,0.3)]' : 'opacity-60'}`}></div>
-        ))}
-      </div>
+      {/* DNA progress bar — Expert only */}
+      {activeMode === 'expert' && (
+        <div className="w-full h-0.5 flex bg-[#0a0a0c]">
+          {currentSession?.activities.map((act, i) => (
+            <div key={i} className={`flex-1 h-full transition-all duration-500 ${getPhaseColor(act.phase || 'development', i === currentStep)} ${i === currentStep ? 'opacity-100' : 'opacity-40'}`} />
+          ))}
+        </div>
+      )}
 
       <main className="flex-1 flex overflow-hidden">
 
-        {/* --- Gemini-style Sidebar (RIWAYAT SESI & LANGKAH DETAIL) --- */}
-        <div className="w-[300px] flex-shrink-0 border-r border-[#222228] bg-[#0a0a0c] flex flex-col z-10">
+        {/* ── Junior Mode ── */}
+        {activeMode === 'junior' && (
+          <JuniorDashboard
+            inTauri={inTauri}
+            geminiKey={geminiKey}
+            isRecording={isRecording}
+            duration={duration}
+            onToggleRecording={toggleRecording}
+            juniorSessions={juniorSessions}
+            setJuniorSessions={setJuniorSessions}
+            selectedJuniorSessionId={selectedJuniorSessionId}
+            setSelectedJuniorSessionId={setSelectedJuniorSessionId}
+          />
+        )}
 
-          {/* Header Sidebar with "+ Sesi Baru" button */}
+        {/* ── Expert Mode ── */}
+        {activeMode === 'expert' && (
+        <>
+        {/* Gemini-style Sidebar */}
+        <div className="w-[300px] flex-shrink-0 border-r border-[#222228] bg-[#0a0a0c] flex flex-col z-10">
           <div className="p-4 border-b border-[#222228] flex items-center justify-between bg-[#0d0e12]">
-            <span className="text-xs font-mono text-zinc-400 tracking-wider">RIWAYAT SESI</span>
+            <span className="text-xs font-mono text-zinc-400 tracking-wider">SESI EXPERT</span>
             <button
               onClick={() => setShowNewSessionModal(true)}
               className="p-1.5 rounded-lg bg-zinc-950 border border-zinc-800 hover:border-teal-500/50 hover:bg-[#181a1f] text-teal-400 transition-all flex items-center justify-center space-x-1.5 font-bold text-xs"
@@ -619,14 +716,28 @@ Tugas Anda adalah menjawab pertanyaan user berdasarkan log aktivitas kognitif ex
                       : 'bg-[#121317]/30 border-[#222228] hover:bg-[#121317]'
                     }`}
                 >
-                  <button
-                    onClick={(e) => handleDeleteSession(s, e)}
-                    className="absolute top-3 right-3 text-zinc-600 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-black/20"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  <div className="absolute top-3 right-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-[#181a1f] pl-2 rounded-l-md">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setExportingSession(s);
+                        setShowExportModal(true);
+                      }}
+                      title="Export Sesi ke Junior"
+                      className="text-zinc-500 hover:text-violet-400 p-1 rounded hover:bg-black/25 transition-all"
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={(e) => handleDeleteSession(s, e)}
+                      title="Hapus Sesi"
+                      className="text-zinc-500 hover:text-rose-400 p-1 rounded hover:bg-black/25 transition-all"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
 
-                  <div className="flex items-center justify-between mb-2 pr-6">
+                  <div className="flex items-center justify-between mb-2 pr-14">
                     <span className={`text-[9px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider ${s.mode === 'expert'
                         ? 'bg-teal-500/10 text-teal-400 border-teal-500/20'
                         : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
@@ -678,7 +789,7 @@ Tugas Anda adalah menjawab pertanyaan user berdasarkan log aktivitas kognitif ex
 
           {currentSession ? (
             <>
-              <div className="flex items-center justify-between mb-6 flex-shrink-0">
+              <div className="flex items-center justify-between mb-6 flex-shrink-0 border-b border-[#222228]/50 pb-4">
                 <div className="flex flex-col">
                   <h2 className="text-lg font-medium text-zinc-100 flex items-center">
                     Morphic Workspace Inspector
@@ -689,8 +800,19 @@ Tugas Anda adalah menjawab pertanyaan user berdasarkan log aktivitas kognitif ex
                     )}
                   </h2>
                   <p className="text-[12px] text-zinc-500 mt-1 font-mono">{currentSession.title} ({currentSession.activities.length} logs)</p>
-                  <p>hallo test</p>
                 </div>
+                
+                <button
+                  onClick={() => {
+                    setExportingSession(currentSession);
+                    setExportExpertName(localStorage.getItem('ghostflow_expert_name') || '');
+                    setShowExportModal(true);
+                  }}
+                  className="flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-500 active:scale-95 text-white font-bold rounded-xl text-xs shadow-lg shadow-violet-950/20 transition-all font-mono"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>EXPORT SESI KE JUNIOR</span>
+                </button>
               </div>
 
               <div className="flex-1 relative min-h-[400px]">
@@ -768,16 +890,15 @@ Tugas Anda adalah menjawab pertanyaan user berdasarkan log aktivitas kognitif ex
 
         </div>
 
-        {/* --- Right Cognitive Advisor Panel (Fully Optional AI Switch) --- */}
+        {/* --- Right Cognitive Advisor Panel --- */}
         <div className="w-[320px] flex-shrink-0 border-l border-[#222228] bg-[#0a0a0c] flex flex-col hidden lg:flex z-10">
 
           <AnimatePresence mode="wait">
-            {isAiActive ? (
-              <motion.div
-                key="ai-active"
-                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}
-                className="flex-1 flex flex-col overflow-hidden"
-              >
+            <motion.div
+              key="ai-active"
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}
+              className="flex-1 flex flex-col overflow-hidden"
+            >
                 {/* Cognitive Signals Summary */}
                 <div className="p-5 border-b border-[#222228] bg-[#0d0e12]">
                   <h3 className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-4 flex items-center">
@@ -1002,24 +1123,12 @@ Tugas Anda adalah menjawab pertanyaan user berdasarkan log aktivitas kognitif ex
                     </form>
                   </div>
                 </div>
-              </motion.div>
-            ) : (
-              <motion.div
-                key="ai-inactive"
-                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}
-                className="flex-1 flex flex-col items-center justify-center p-8 text-center text-zinc-600 font-mono text-xs"
-              >
-                <Sparkles className="w-12 h-12 text-zinc-800 mb-4" />
-                <span>
-                  Asisten Kognitif AI Nonaktif.<br /><br />
-                  Aktifkan switch <b>"Asisten Kognitif AI"</b> di kanan atas untuk menyalakan cognitive reasoning, signals, dan chatbot mentor.
-                </span>
-              </motion.div>
-            )}
+            </motion.div>
           </AnimatePresence>
 
         </div>
-
+        </>
+      )}
       </main>
 
       {/* --- MANUAL NEW SESSION CREATION MODAL --- */}
@@ -1068,29 +1177,15 @@ Tugas Anda adalah menjawab pertanyaan user berdasarkan log aktivitas kognitif ex
                   />
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-zinc-500 mb-1.5">MODE SESI</label>
-                    <select
-                      value={newMode}
-                      onChange={e => setNewMode(e.target.value as 'expert' | 'junior')}
-                      className="w-full bg-[#181a1f] border border-[#222228] rounded-lg py-2 px-3 text-zinc-200 focus:outline-none focus:border-zinc-600 cursor-pointer"
-                    >
-                      <option value="expert">Expert Mode</option>
-                      <option value="junior">Junior Mode</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-zinc-500 mb-1.5">WORKSPACE DIRECTORY</label>
-                    <input
-                      type="text"
-                      value={newProjDir}
-                      onChange={e => setNewProjDir(e.target.value)}
-                      placeholder="Folder Path (default: .)"
-                      className="w-full bg-[#181a1f] border border-[#222228] rounded-lg py-2 px-3 text-zinc-200 focus:outline-none focus:border-zinc-600 transition-colors"
-                    />
-                  </div>
+                <div>
+                  <label className="block text-zinc-500 mb-1.5">WORKSPACE DIRECTORY</label>
+                  <input
+                    type="text"
+                    value={newProjDir}
+                    onChange={e => setNewProjDir(e.target.value)}
+                    placeholder="Folder Path (default: .)"
+                    className="w-full bg-[#181a1f] border border-[#222228] rounded-lg py-2 px-3 text-zinc-200 focus:outline-none focus:border-zinc-600 transition-colors"
+                  />
                 </div>
 
                 <div className="pt-4 flex space-x-3 justify-end">
@@ -1109,6 +1204,59 @@ Tugas Anda adalah menjawab pertanyaan user berdasarkan log aktivitas kognitif ex
                 </div>
               </div>
 
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* --- EXPORT SESSION MODAL --- */}
+      <AnimatePresence>
+        {showExportModal && exportingSession && (
+          <div className="fixed inset-0 bg-black/70 backdrop-blur-md flex items-center justify-center z-50 p-4">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              transition={transition}
+              className="bg-[#0f1115] border border-[#222228] rounded-2xl max-w-md w-full p-6 shadow-2xl relative"
+            >
+              <button
+                onClick={() => { setShowExportModal(false); setExportingSession(null); }}
+                className="absolute top-4 right-4 text-zinc-500 hover:text-zinc-200 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+
+              <h3 className="text-base font-semibold text-zinc-100 mb-4 flex items-center">
+                <Upload className="w-5 h-5 text-violet-400 mr-2" />
+                Ekspor Sesi ke Junior
+              </h3>
+
+              <div className="space-y-4 font-mono text-xs">
+                <div className="bg-[#121317] border border-[#222228] p-3.5 rounded-xl">
+                  <span className="text-[9px] text-zinc-500 uppercase tracking-widest font-bold block mb-1">Preview Sesi</span>
+                  <div className="text-[12px] font-bold text-zinc-200">{exportingSession.title}</div>
+                  <div className="text-[10px] text-zinc-500 mt-1">{exportingSession.description}</div>
+                  <div className="text-[9px] text-teal-400 mt-2">{exportingSession.activities.length} aktivitas terhimpun</div>
+                  <div className="text-[9px] text-violet-400 mt-1">Sesi akan diekspor atas nama: {authUser?.name}</div>
+                </div>
+
+                <div className="pt-4 flex space-x-3 justify-end">
+                  <button
+                    onClick={() => { setShowExportModal(false); setExportingSession(null); }}
+                    className="px-4 py-2 border border-[#222228] text-zinc-400 hover:text-zinc-200 rounded-lg"
+                  >
+                    Batal
+                  </button>
+                  <button
+                    onClick={handleExportSession}
+                    disabled={exportLoading}
+                    className="px-4 py-2 bg-violet-600 text-white hover:bg-violet-500 font-bold rounded-lg transition-colors flex items-center gap-1.5 disabled:opacity-50"
+                  >
+                    {exportLoading ? 'Mengekspor...' : 'Ekspor Sesi'}
+                  </button>
+                </div>
+              </div>
             </motion.div>
           </div>
         )}

@@ -12,12 +12,30 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "GhostFlow AI — Cognitive Engine",
         "width": 1440,
         "height": 900,
         "resizable": true,
         "fullscreen": false,
         "decorations": true
+      },
+      {
+        "label": "ghostflow-hint",
+        "title": "GhostFlow Hint",
+        "url": "/hint-window",
+        "width": 64,
+        "height": 64,
+        "resizable": false,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "visible": false,
+        "x": -9999,
+        "y": -9999,
+        "skipTaskbar": true,
+        "shadow": false
       }
     ],
     "security": {

@@ -45,11 +45,19 @@ pub struct SessionExport {
 pub struct SessionMetadata {
     pub session_id: String,
     pub title: String,
+    #[serde(default)]
+    pub description: String,
     pub created_at: String,
     pub ended_at: String,
     pub duration_seconds: u64,
     pub mode: String,
+    #[serde(default)]
+    pub project_dir: String,
     pub total_activities: usize,
+    #[serde(default)]
+    pub exported: bool,
+    #[serde(default)]
+    pub expert_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +90,8 @@ pub struct TelemetryEngine {
     last_window_title: Arc<Mutex<String>>,
     last_git_hash: Arc<Mutex<String>>,
     last_active_processes: Arc<Mutex<Vec<String>>>,
+    // Active browser tab tracker (title|||url|||browser)
+    last_browser_tab: Arc<Mutex<String>>,
 
     // Error & Fix Tracking State
     error_detected: Arc<AtomicBool>,
@@ -108,13 +118,14 @@ impl TelemetryEngine {
             last_window_title: Arc::new(Mutex::new(String::new())),
             last_git_hash: Arc::new(Mutex::new(String::new())),
             last_active_processes: Arc::new(Mutex::new(Vec::new())),
+            last_browser_tab: Arc::new(Mutex::new(String::new())),
             error_detected: Arc::new(AtomicBool::new(false)),
             error_keyword: Arc::new(Mutex::new(String::new())),
             modified_files_during_error: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
-    pub fn start(&self, mode: String, project_dir: String) {
+    pub fn start(&self, mode: String, project_dir: String, existing_activities: Option<Vec<ActivityRecord>>, existing_cognitive_signals: Option<CognitiveSignals>) {
         if self.is_recording.load(Ordering::Relaxed) {
             return;
         }
@@ -122,7 +133,11 @@ impl TelemetryEngine {
         // Reset buffers & state variables
         {
             let mut acts = self.activities.lock().unwrap();
-            acts.clear();
+            if let Some(existing) = existing_activities {
+                *acts = existing;
+            } else {
+                acts.clear();
+            }
         }
         {
             let mut start = self.session_start.lock().unwrap();
@@ -142,12 +157,16 @@ impl TelemetryEngine {
         }
         {
             let mut cog = self.cognitive.lock().unwrap();
-            *cog = CognitiveSignals {
-                fast_file_switch_count: 0,
-                research_phase_count: 0,
-                retry_pattern_count: 0,
-                total_app_switches: 0,
-            };
+            if let Some(existing_cog) = existing_cognitive_signals {
+                *cog = existing_cog;
+            } else {
+                *cog = CognitiveSignals {
+                    fast_file_switch_count: 0,
+                    research_phase_count: 0,
+                    retry_pattern_count: 0,
+                    total_app_switches: 0,
+                };
+            }
         }
         {
             let mut lwt = self.last_window_title.lock().unwrap();
@@ -156,6 +175,8 @@ impl TelemetryEngine {
             lgh.clear();
             let mut lap = self.last_active_processes.lock().unwrap();
             lap.clear();
+            let mut lbt = self.last_browser_tab.lock().unwrap();
+            lbt.clear();
         }
         self.error_detected.store(false, Ordering::Relaxed);
         {
@@ -176,6 +197,7 @@ impl TelemetryEngine {
         let last_window_title = self.last_window_title.clone();
         let last_git_hash = self.last_git_hash.clone();
         let last_active_processes = self.last_active_processes.clone();
+        let last_browser_tab = self.last_browser_tab.clone();
 
         let error_detected = self.error_detected.clone();
         let error_keyword = self.error_keyword.clone();
@@ -184,7 +206,6 @@ impl TelemetryEngine {
         // Spawn relaxed telemetry worker loop (Ticking every 5 seconds for responsive logs)
         let handle = thread::spawn(move || {
             let mut last_scan_time = Utc::now();
-            let mut tick_count: u64 = 0;
 
             while is_rec.load(Ordering::Relaxed) {
                 thread::sleep(Duration::from_secs(5));
@@ -192,7 +213,6 @@ impl TelemetryEngine {
                     break;
                 }
 
-                tick_count += 1;
                 let now = Utc::now();
                 let project_path = proj_dir.lock().unwrap().clone();
 
@@ -253,14 +273,56 @@ impl TelemetryEngine {
                     }
                 }
 
-                // ─── Wayland Fallback 3: Chrome History (Active web research) ───
-                if current_window_title_str.is_empty() {
-                    let chrome_active = current_processes.iter().any(|p| p.to_lowercase().contains("chrome"));
-                    if chrome_active {
-                        if let Some((tab_title, _url)) = get_recent_chrome_tab() {
-                            current_window_title_str = tab_title;
-                            current_app_class = "Google Chrome".to_string();
+                // ─── Active Browser Tab Tracking (all browsers, always active) ───
+                // Always poll browser SQLite history and compare with last known tab
+                if let Some((tab_title, tab_url, browser_name)) = get_recent_browser_tab() {
+                    let tab_key = format!("{}|||{}|||{}", tab_title, tab_url, browser_name);
+                    let prev_tab = last_browser_tab.lock().unwrap().clone();
+                    
+                    if tab_key != prev_tab && !tab_title.is_empty() {
+                        // Tab changed — log as web activity
+                        *last_browser_tab.lock().unwrap() = tab_key;
+                        
+                        // Only override window detection if it's empty or same browser
+                        if current_window_title_str.is_empty() || current_app_class == browser_name || current_app_class.contains("Chrome") || current_app_class.contains("Firefox") || current_app_class.contains("Edge") {
+                            current_window_title_str = tab_title.clone();
+                            current_app_class = browser_name.clone();
                         }
+                        
+                        // Directly log the tab switch as a web_research activity
+                        let tab_layout = determine_layout_state(&browser_name, "");
+                        let activity_type = classify_activity_type(&browser_name, &tab_title);
+                        let act = ActivityRecord {
+                            activity_id: format!("act-tab-{}", Uuid::new_v4().to_string().split('-').next().unwrap_or("x")),
+                            timestamp: now.to_rfc3339(),
+                            activity_type: activity_type.clone(),
+                            app_class: browser_name.clone(),
+                            window_title: tab_title.clone(),
+                            layout_state: tab_layout,
+                            duration_ms: 5000,
+                            details: Some(serde_json::json!({
+                                "tab_title": tab_title,
+                                "url": tab_url,
+                                "browser": browser_name,
+                                "source_type": if tab_title.to_lowercase().contains("stackoverflow") { "stackoverflow" }
+                                    else if tab_title.to_lowercase().contains("docs") || tab_title.to_lowercase().contains("documentation") { "documentation" }
+                                    else if tab_url.to_lowercase().contains("github") { "github" }
+                                    else { "web_page" }
+                            })),
+                        };
+                        let mut acts = activities.lock().unwrap();
+                        let mut apps_list = unique_apps.lock().unwrap();
+                        if !apps_list.contains(&browser_name) {
+                            apps_list.push(browser_name.clone());
+                        }
+                        acts.push(act);
+                        
+                        let mut cog = cognitive.lock().unwrap();
+                        cog.research_phase_count += 1;
+                    } else if current_window_title_str.is_empty() {
+                        // Fallback: use last known tab if window detection fails
+                        current_window_title_str = tab_title;
+                        current_app_class = browser_name;
                     }
                 }
 
@@ -499,29 +561,38 @@ impl TelemetryEngine {
                     acts.push(act);
                 }
 
-                // ─── 5. LOG WEBPAGE RESEARCH (CHROME TAB) ───
-                if current_app_class == "Google Chrome" || current_app_class == "Firefox" {
-                    let mut acts = activities.lock().unwrap();
-                    let mut apps_list = unique_apps.lock().unwrap();
-                    
-                    if !apps_list.contains(&current_app_class) {
-                        apps_list.push(current_app_class.clone());
+                // ─── 5. LOG WEBPAGE RESEARCH (via xprop window focus, if browser is active) ───
+                // Note: Tab changes are already logged above via browser SQLite polling.
+                // Here we only log if a browser window got focus via xprop (e.g. first open).
+                if (current_app_class == "Google Chrome" || current_app_class == "Firefox"
+                    || current_app_class == "Microsoft Edge" || current_app_class == "Chromium")
+                    && !current_window_title_str.is_empty() {
+                    // Check if this is already logged as a tab switch
+                    let current_tab_key = format!("{}||||", current_window_title_str);
+                    let prev_tab = last_browser_tab.lock().unwrap().clone();
+                    // Only log if this xprop title wasn't already captured by tab polling
+                    if !prev_tab.starts_with(&current_window_title_str) {
+                        let mut acts = activities.lock().unwrap();
+                        let mut apps_list = unique_apps.lock().unwrap();
+                        if !apps_list.contains(&current_app_class) {
+                            apps_list.push(current_app_class.clone());
+                        }
+                        let act = ActivityRecord {
+                            activity_id: format!("act-browser-{}", Uuid::new_v4().to_string().split('-').next().unwrap_or("x")),
+                            timestamp: now.to_rfc3339(),
+                            activity_type: classify_activity_type(&current_app_class, &current_window_title_str),
+                            app_class: current_app_class.clone(),
+                            window_title: current_window_title_str.clone(),
+                            layout_state: layout_state.clone(),
+                            duration_ms: 5000,
+                            details: build_details(&current_app_class, &current_window_title_str),
+                        };
+                        acts.push(act);
+                        let mut cog = cognitive.lock().unwrap();
+                        cog.research_phase_count += 1;
+                        // Update last_browser_tab to prevent duplicate
+                        *last_browser_tab.lock().unwrap() = current_tab_key;
                     }
-
-                    let act = ActivityRecord {
-                        activity_id: format!("act-chrome-{}", Uuid::new_v4().to_string().split('-').next().unwrap_or("x")),
-                        timestamp: now.to_rfc3339(),
-                        activity_type: classify_activity_type(&current_app_class, &current_window_title_str),
-                        app_class: current_app_class.clone(),
-                        window_title: current_window_title_str.clone(),
-                        layout_state: layout_state.clone(),
-                        duration_ms: 5000,
-                        details: build_details(&current_app_class, &current_window_title_str),
-                    };
-                    acts.push(act);
-
-                    let mut cog = cognitive.lock().unwrap();
-                    cog.research_phase_count += 1;
                 }
 
                 // ─── 6. EFFICIENT GIT SNAPSHOT ───
@@ -582,6 +653,7 @@ impl TelemetryEngine {
             self.last_window_title.lock().unwrap().clear();
             self.last_git_hash.lock().unwrap().clear();
             self.last_active_processes.lock().unwrap().clear();
+            self.last_browser_tab.lock().unwrap().clear();
         }
         self.error_detected.store(false, Ordering::Relaxed);
         {
@@ -690,30 +762,62 @@ fn get_strict_whitelisted_processes() -> Vec<String> {
     procs
 }
 
-// WAYLAND CHROME SQLITE HISTORY POLLER (CHOOSES NEWEST PROFILE DYNAMICALLY)
-fn get_recent_chrome_tab() -> Option<(String, String)> {
+// MULTI-BROWSER SQLITE HISTORY POLLER (Chrome, Edge, Firefox)
+fn get_recent_browser_tab() -> Option<(String, String, String)> {
     let py_cmd = r#"
 import sqlite3, shutil, os, glob
-history_paths = glob.glob(os.path.expanduser('~/.config/google-chrome/*/History'))
-if not history_paths:
-    history_paths = [os.path.expanduser('~/.config/google-chrome/Default/History')]
 
-try:
-    # Find the History file with the latest modification time (most active profile)
-    latest_history = max(history_paths, key=os.path.getmtime) if history_paths else None
-    if latest_history and os.path.exists(latest_history):
-        temp_path = '/tmp/chrome_history_temp'
-        shutil.copyfile(latest_history, temp_path)
+def query_chromium_history(paths, browser_name):
+    try:
+        valid = [p for p in paths if os.path.exists(p)]
+        if not valid:
+            return None
+        latest = max(valid, key=os.path.getmtime)
+        temp_path = '/tmp/ghostflow_browser_temp'
+        shutil.copyfile(latest, temp_path)
         conn = sqlite3.connect(temp_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT title, url FROM urls ORDER BY last_visit_time DESC LIMIT 1")
-        row = cursor.fetchone()
+        cur = conn.cursor()
+        cur.execute('SELECT title, url FROM urls ORDER BY last_visit_time DESC LIMIT 1')
+        row = cur.fetchone()
         conn.close()
         os.remove(temp_path)
-        if row and row[0].strip():
-            print(f"{row[0]}|||{row[1]}")
-except Exception as e:
-    pass
+        if row and row[0] and row[0].strip():
+            return (row[0].strip(), row[1].strip(), browser_name)
+    except:
+        pass
+    return None
+
+def query_firefox_history():
+    try:
+        profiles = glob.glob(os.path.expanduser('~/.mozilla/firefox/*.default*'))
+        profiles += glob.glob(os.path.expanduser('~/.mozilla/firefox/*.default-release*'))
+        if not profiles:
+            return None
+        db = os.path.join(profiles[0], 'places.sqlite')
+        if not os.path.exists(db):
+            return None
+        temp_path = '/tmp/ghostflow_firefox_temp'
+        shutil.copyfile(db, temp_path)
+        conn = sqlite3.connect(temp_path)
+        cur = conn.cursor()
+        cur.execute('SELECT title, url FROM moz_places ORDER BY last_visit_date DESC LIMIT 1')
+        row = cur.fetchone()
+        conn.close()
+        os.remove(temp_path)
+        if row and row[0] and row[0].strip():
+            return (row[0].strip(), row[1].strip(), 'Firefox')
+    except:
+        pass
+    return None
+
+result = None
+result = result or query_chromium_history(glob.glob(os.path.expanduser('~/.config/google-chrome/*/History')), 'Google Chrome')
+result = result or query_chromium_history(glob.glob(os.path.expanduser('~/.config/microsoft-edge/*/History')), 'Microsoft Edge')
+result = result or query_chromium_history(glob.glob(os.path.expanduser('~/.config/chromium/*/History')), 'Chromium')
+result = result or query_firefox_history()
+
+if result:
+    print(f"{result[0]}|||{result[1]}|||{result[2]}")
 "#;
 
     let output = Command::new("python3")
@@ -723,13 +827,20 @@ except Exception as e:
     if let Ok(out) = output {
         let stdout = String::from_utf8_lossy(&out.stdout).to_string();
         if stdout.contains("|||") {
-            let parts: Vec<&str> = stdout.split("|||").collect();
-            if parts.len() >= 2 {
-                return Some((parts[0].trim().to_string(), parts[1].trim().to_string()));
+            let parts: Vec<&str> = stdout.splitn(3, "|||").collect();
+            if parts.len() >= 3 {
+                return Some((parts[0].trim().to_string(), parts[1].trim().to_string(), parts[2].trim().to_string()));
+            } else if parts.len() == 2 {
+                return Some((parts[0].trim().to_string(), parts[1].trim().to_string(), "Browser".to_string()));
             }
         }
     }
     None
+}
+
+// Keep backward-compat alias
+fn get_recent_chrome_tab() -> Option<(String, String)> {
+    get_recent_browser_tab().map(|(t, u, _)| (t, u))
 }
 
 // GTK RECENT FILES XML POLLER (WAYLAND DOCUMENT DETECTION FALLBACK)
@@ -876,6 +987,8 @@ fn classify_app(wm_class: &str, wm_name: &str) -> String {
         } else {
             "Google Chrome".to_string()
         }
+    } else if class_lower.contains("msedge") || class_lower.contains("microsoft-edge") || name_lower.contains("microsoft edge") {
+        "Microsoft Edge".to_string()
     } else if class_lower.contains("firefox") {
         "Firefox".to_string()
     } else if class_lower.contains("figma") {
@@ -1055,9 +1168,11 @@ fn determine_layout_state(focused_app: &str, win_id: &str) -> LayoutState {
     let (screen_w, screen_h) = get_screen_dimensions();
     
     if !win_id.is_empty() && win_id != "0x0" {
-        if let Some((x, y, w, h)) = get_window_geometry(win_id) {
+        if let Some((x, _y, w, h)) = get_window_geometry(win_id) {
             let screen_mode = if w >= screen_w - 150 && h >= screen_h - 150 {
                 "maximized".to_string()
+            } else if x == 0 && _y == 0 {
+                "windowed".to_string()
             } else if w <= screen_w / 2 + 150 {
                 if x <= 150 {
                     "left-half".to_string()
@@ -1074,6 +1189,7 @@ fn determine_layout_state(focused_app: &str, win_id: &str) -> LayoutState {
                 "maximized" => "Fokus Tunggal (Maximized)".to_string(),
                 "left-half" => "Teratur (Split-Screen Kiri)".to_string(),
                 "right-half" => "Teratur (Split-Screen Kanan)".to_string(),
+                "windowed" => "Aktif (Windowed)".to_string(),
                 _ => "Acak-acakan (Overlapping)".to_string(),
             };
 
@@ -1183,8 +1299,10 @@ fn start_recording(
     state: tauri::State<'_, Arc<TelemetryEngine>>,
     mode: String,
     project_dir: String,
+    existing_activities: Option<Vec<ActivityRecord>>,
+    existing_cognitive_signals: Option<CognitiveSignals>,
 ) -> Result<String, String> {
-    state.start(mode.clone(), project_dir);
+    state.start(mode.clone(), project_dir, existing_activities, existing_cognitive_signals);
     Ok(format!("Recording started in {} mode", mode))
 }
 
@@ -1246,12 +1364,31 @@ fn load_all_sessions() -> Result<Vec<serde_json::Value>, String> {
 
     let mut sessions = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&data_dir) {
-        for entry in entries.filter_map(Result::ok) {
+        let mut paths: Vec<_> = entries.filter_map(Result::ok).collect();
+        // Sort by modification time (newest first)
+        paths.sort_by(|a, b| {
+            let ta = a.metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            let tb = b.metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            tb.cmp(&ta)
+        });
+        
+        for entry in paths {
             let path = entry.path();
+            // Skip the exports subdirectory files at root level
             if path.is_file() && path.extension().map(|e| e == "json").unwrap_or(false) {
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&content) {
-                        sessions.push(json_val);
+                        // ── Validate: must have session_metadata.session_id ──
+                        let has_valid_meta = json_val
+                            .get("session_metadata")
+                            .and_then(|m| m.get("session_id"))
+                            .and_then(|id| id.as_str())
+                            .map(|id| !id.is_empty())
+                            .unwrap_or(false);
+                        
+                        if has_valid_meta {
+                            sessions.push(json_val);
+                        }
                     }
                 }
             }
@@ -1279,6 +1416,107 @@ fn delete_session_file(title: String) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn export_session_for_junior(
+    title: String,
+    expert_name: String,
+) -> Result<String, String> {
+    let data_dir = std::env::var("HOME")
+        .map(|h| PathBuf::from(h).join("GhostFlow_Data"))
+        .unwrap_or_else(|_| PathBuf::from("GhostFlow_Data"));
+    let export_dir = data_dir.join("exports");
+    let _ = std::fs::create_dir_all(&export_dir);
+
+    let sanitized: String = title.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
+    let src = data_dir.join(format!("{}.json", sanitized.to_lowercase()));
+    let dst = export_dir.join(format!("{}.json", sanitized.to_lowercase()));
+
+    if !src.exists() {
+        return Err(format!("File sesi tidak ditemukan: {:?}", src));
+    }
+
+    let content = std::fs::read_to_string(&src).map_err(|e| e.to_string())?;
+    let mut json_val: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+
+    if let Some(meta) = json_val.get_mut("session_metadata") {
+        meta["exported"] = serde_json::json!(true);
+        meta["expert_name"] = serde_json::json!(expert_name);
+        meta["exported_at"] = serde_json::json!(chrono::Utc::now().to_rfc3339());
+    }
+
+    let updated = serde_json::to_string_pretty(&json_val).map_err(|e| e.to_string())?;
+    std::fs::write(&dst, &updated).map_err(|e| e.to_string())?;
+    // Also update original
+    std::fs::write(&src, &updated).map_err(|e| e.to_string())?;
+
+    Ok(dst.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn load_exported_sessions() -> Result<Vec<serde_json::Value>, String> {
+    let data_dir = std::env::var("HOME")
+        .map(|h| PathBuf::from(h).join("GhostFlow_Data"))
+        .unwrap_or_else(|_| PathBuf::from("GhostFlow_Data"));
+    let export_dir = data_dir.join("exports");
+    let mut sessions = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&export_dir) {
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.is_file() && path.extension().map(|e| e == "json").unwrap_or(false) {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                        // Validate: must have session_metadata
+                        let has_valid_meta = val
+                            .get("session_metadata")
+                            .and_then(|m| m.get("session_id"))
+                            .and_then(|id| id.as_str())
+                            .map(|id| !id.is_empty())
+                            .unwrap_or(false);
+                        if has_valid_meta {
+                            sessions.push(val);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(sessions)
+}
+
+#[tauri::command]
+fn show_hint_window(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    if let Some(hint_win) = app.get_webview_window("ghostflow-hint") {
+        let _ = hint_win.show();
+        let _ = hint_win.set_focus();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn focus_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    if let Some(main_win) = app.get_webview_window("main") {
+        let _ = main_win.show();
+        let _ = main_win.unminimize();
+        let _ = main_win.set_focus();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn send_hint_to_overlay(app: tauri::AppHandle, hint: serde_json::Value) -> Result<(), String> {
+    use tauri::Manager;
+    use tauri::Emitter;
+    // Emit to hint window
+    if let Some(hint_win) = app.get_webview_window("ghostflow-hint") {
+        let _ = hint_win.emit("ghost-hint", &hint);
+        // Show the window if hidden
+        let _ = hint_win.show();
+    }
+    Ok(())
+}
+
 // ── Tauri App Entry ──
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1296,6 +1534,11 @@ pub fn run() {
             save_session_file,
             load_all_sessions,
             delete_session_file,
+            export_session_for_junior,
+            load_exported_sessions,
+            show_hint_window,
+            focus_main_window,
+            send_hint_to_overlay,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
