@@ -167,12 +167,13 @@ Tentukan:
 
 Format respons: JSON dengan field: matched (boolean), expert_name (string|null), session_title (string|null), reasoning (string), hint (string — kalimat coaching pendek untuk Junior, max 2 kalimat).`;
 
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`, {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
       });
       const data = await res.json();
-      const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      const raw = data.candidates?.[0]?.content?.parts?.[0]?.text 
+        || (data.error?.message ? `Error Gemini: ${data.error.message}` : '');
       const jsonMatch = raw.match(/\{[\s\S]*\}/);
       
       let parsed = null;
@@ -268,15 +269,16 @@ Jawab dalam Bahasa Indonesia, profesional dan memotivasi. Jika ada data expert, 
 
     try {
       setChatMessages(prev => [...prev, { role: 'assistant', text: '...' }]);
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`, {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
       });
       const data = await res.json();
-      const reply = data.candidates?.[0]?.content?.parts?.[0]?.text || 'Tidak ada respons.';
+      const reply = data.candidates?.[0]?.content?.parts?.[0]?.text 
+        || (data.error?.message ? `Error Gemini: ${data.error.message}` : 'Tidak ada respons.');
       setChatMessages(prev => [...prev.filter(m => m.text !== '...'), { role: 'assistant', text: reply }]);
-    } catch {
-      setChatMessages(prev => [...prev.filter(m => m.text !== '...'), { role: 'assistant', text: 'Gagal terhubung ke Gemini API.' }]);
+    } catch (err: any) {
+      setChatMessages(prev => [...prev.filter(m => m.text !== '...'), { role: 'assistant', text: `Gagal terhubung ke Gemini API: ${err.message || err}` }]);
     }
   };
 
@@ -394,6 +396,7 @@ Jawab dalam Bahasa Indonesia, profesional dan memotivasi. Jika ada data expert, 
             activities={selectedExpertSession?.activities || currentJunior?.activities || []}
             sessionTitle={selectedExpertSession?.title || currentJunior?.title || ''}
             expertName={selectedExpertSession?.expertName}
+            geminiKey={geminiKey}
           />
         </div>
       </div>

@@ -22,23 +22,18 @@ export default function HintWindow() {
   const [windowPos, setWindowPos] = useState({ x: 0, y: 0 });
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Listen for hints from main window via Tauri events
+  // Position window on right side of screen on mount
   useEffect(() => {
     if (typeof window === 'undefined') return;
     if (!(window as any).__TAURI_INTERNALS__) return;
 
-    // Position window on right side of screen
     const initWindow = async () => {
       try {
         const { getCurrentWindow, PhysicalPosition, PhysicalSize } = await import('@tauri-apps/api/window');
         const win = getCurrentWindow();
-        const monitor = await (await import('@tauri-apps/api/window')).currentMonitor();
-        if (monitor) {
-          const screenW = monitor.size.width;
-          const screenH = monitor.size.height;
-          // Position at right side, vertically centered
-          await win.setPosition(new PhysicalPosition(screenW - 80, Math.floor(screenH / 2) - 32));
-        }
+        // Use safe hardcoded position (right side) — avoids currentMonitor permission issue
+        await win.setSize(new PhysicalSize(64, 64));
+        await win.setPosition(new PhysicalPosition(1840, 500));
       } catch (e) {
         console.error('Failed to init window position:', e);
       }
@@ -58,7 +53,7 @@ export default function HintWindow() {
       };
       setHints(prev => [hint, ...prev].slice(0, 8));
       setHasUnread(true);
-      // Auto-expand for 3 seconds when hint arrives
+      // Auto-expand for 5 seconds when hint arrives
       setIsExpanded(true);
       setTimeout(() => {
         if (!isExpanded) setIsExpanded(false);
@@ -79,17 +74,16 @@ export default function HintWindow() {
       try {
         const { getCurrentWindow, PhysicalSize, PhysicalPosition } = await import('@tauri-apps/api/window');
         const win = getCurrentWindow();
-        const monitor = await (await import('@tauri-apps/api/window')).currentMonitor();
-        if (!monitor) return;
 
-        const screenW = monitor.size.width;
-        const screenH = monitor.size.height;
+        // Use hardcoded screen right-side position to avoid currentMonitor permission issues
+        const screenW = window.screen.width || 1920;
+        const screenH = window.screen.height || 1080;
 
         if (isExpanded) {
           const newW = 320;
           const newH = 420;
           await win.setSize(new PhysicalSize(newW, newH));
-          await win.setPosition(new PhysicalPosition(screenW - newW - 8, Math.floor(screenH / 2) - newH / 2));
+          await win.setPosition(new PhysicalPosition(screenW - newW - 16, Math.floor(screenH / 2) - Math.floor(newH / 2)));
         } else {
           await win.setSize(new PhysicalSize(64, 64));
           await win.setPosition(new PhysicalPosition(screenW - 80, Math.floor(screenH / 2) - 32));

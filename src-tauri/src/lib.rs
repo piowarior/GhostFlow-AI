@@ -248,9 +248,14 @@ impl TelemetryEngine {
                             modified_files_found.push(relative_path);
                         }
 
-                        // If xprop failed to identify active editor, override with inferred coding activity
+                        // If xprop failed to identify active editor, infer from window title/processes
                         if current_window_title_str.is_empty() {
-                            let editor_name = if current_processes.iter().any(|p| p.to_lowercase().contains("vscodium")) {
+                            // Detect Antigravity specifically from process list
+                            let editor_name = if current_processes.iter().any(|p| p.to_lowercase().contains("antigravity")) {
+                                "Antigravity"
+                            } else if current_processes.iter().any(|p| p.to_lowercase().contains("cursor")) {
+                                "Cursor IDE"
+                            } else if current_processes.iter().any(|p| p.to_lowercase().contains("vscodium")) {
                                 "VS Code (Codium)"
                             } else {
                                 "VS Code"
@@ -975,12 +980,16 @@ fn classify_app(wm_class: &str, wm_name: &str) -> String {
     let class_lower = wm_class.to_lowercase();
     let name_lower = wm_name.to_lowercase();
 
-    if class_lower.contains("code") || class_lower.contains("vscodium") || class_lower.contains("antigravity") {
-        if class_lower.contains("antigravity") {
-            "Antigravity".to_string()
-        } else {
-            "VS Code".to_string()
-        }
+    // Check window title/name first for apps that may appear under generic WM classes
+    if name_lower.contains("antigravity") || class_lower.contains("antigravity") {
+        return "Antigravity".to_string();
+    }
+    if name_lower.contains("cursor") && (name_lower.ends_with(".tsx") || name_lower.ends_with(".ts") || name_lower.ends_with(".rs") || name_lower.ends_with(".py") || name_lower.contains("— cursor")) {
+        return "Cursor IDE".to_string();
+    }
+
+    if class_lower.contains("code") || class_lower.contains("vscodium") {
+        "VS Code".to_string()
     } else if class_lower.contains("chrome") || class_lower.contains("chromium") {
         if name_lower.contains("figma") {
             "Figma (Chrome)".to_string()
@@ -1008,6 +1017,13 @@ fn classify_app(wm_class: &str, wm_name: &str) -> String {
         "Terminal".to_string()
     } else if class_lower.contains("docker") {
         "Docker Desktop".to_string()
+    } else if class_lower.contains("gedit") || class_lower.contains("mousepad")
+        || class_lower.contains("notepad") || class_lower.contains("leafpad")
+        || class_lower.contains("kate") || class_lower.contains("sublime")
+        || class_lower.contains("pluma") || class_lower.contains("xed")
+        || name_lower.contains("notepad") || name_lower.contains("text editor")
+    {
+        "Penyunting Teks (Notepad)".to_string()
     } else if !wm_class.is_empty() {
         wm_class.to_string()
     } else {
@@ -1053,7 +1069,7 @@ fn classify_activity_type(app_class: &str, window_title: &str) -> String {
         "document_view".to_string()
     } else {
         match app_class {
-            "VS Code" | "Antigravity" => {
+            "VS Code" | "Antigravity" | "Cursor IDE" | "Penyunting Teks (Notepad)" => {
                 if title_lower.contains(".env") || title_lower.contains("docker-compose")
                     || title_lower.contains("config")
                 {
@@ -1256,25 +1272,62 @@ fn capture_git_snapshot(project_dir: &str) -> Option<ActivityRecord> {
         return None;
     }
 
-    let diff_output = Command::new("git")
-        .args(["-C", project_dir, "diff", "--stat"])
+    // Use shortstat to detect insertions and deletions (line-level changes)
+    let shortstat = Command::new("git")
+        .args(["-C", project_dir, "diff", "HEAD", "--shortstat"])
         .output()
         .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
+
+    // Also check staged changes (index diff)
+    let staged_stat = Command::new("git")
+        .args(["-C", project_dir, "diff", "--cached", "--shortstat"])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+
+    // Extract insertions/deletions counts from shortstat string
+    let insertions: u32 = shortstat.split_whitespace()
+        .zip(shortstat.split_whitespace().skip(1))
+        .find_map(|(n, label)| if label.contains("insertion") { n.parse().ok() } else { None })
+        .unwrap_or(0);
+    let deletions: u32 = shortstat.split_whitespace()
+        .zip(shortstat.split_whitespace().skip(1))
+        .find_map(|(n, label)| if label.contains("deletion") { n.parse().ok() } else { None })
+        .unwrap_or(0);
 
     let changed_files: Vec<String> = status_str
         .lines()
-        .filter(|l| !l.is_empty())
-        .map(|l| l[3..].trim().to_string())
+        .filter(|l| !l.is_empty() && l.len() >= 3)
+        .map(|l| {
+            let status_code = &l[..2].trim();
+            let filepath = l[3..].trim().to_string();
+            let status_label = match *status_code {
+                "M" | "MM" => "[M]",
+                "A" => "[+]",
+                "D" => "[-]",
+                "R" => "[R]",
+                "?" | "??" => "[?]",
+                _ => "",
+            };
+            format!("{} {}", status_label, filepath)
+        })
         .collect();
+
+    let summary = if insertions > 0 || deletions > 0 {
+        format!("+{} baris ditambah, -{} baris dihapus ({} file)", insertions, deletions, changed_files.len())
+    } else {
+        format!("{} berkas berubah (Git)", changed_files.len())
+    };
 
     Some(ActivityRecord {
         activity_id: format!("git-{}", Uuid::new_v4().to_string().split('-').next().unwrap_or("x")),
         timestamp: Utc::now().to_rfc3339(),
         activity_type: "git_snapshot".to_string(),
         app_class: "Git".to_string(),
-        window_title: format!("{} berkas dirubah (Git)", changed_files.len()),
+        window_title: summary.clone(),
         layout_state: LayoutState {
             focused_app: "Git (background)".to_string(),
             screen_mode: "background".to_string(),
@@ -1286,7 +1339,10 @@ fn capture_git_snapshot(project_dir: &str) -> Option<ActivityRecord> {
         duration_ms: 0,
         details: Some(serde_json::json!({
             "changed_files": changed_files,
-            "diff_stat": diff_output.trim(),
+            "insertions": insertions,
+            "deletions": deletions,
+            "shortstat": shortstat,
+            "staged_stat": staged_stat,
             "status_raw": status_str
         })),
     })

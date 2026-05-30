@@ -13,7 +13,7 @@ import {
 import { invoke } from '@tauri-apps/api/core';
 import rawSessionData from '../data/ghostflow_session.json';
 import JuniorDashboard from './components/JuniorDashboard';
-import LoginScreen from './components/LoginScreen';
+import LoginScreen, { type AuthUser } from './components/LoginScreen';
 
 type TimelineActivity = {
   activity_id: string;
@@ -54,10 +54,6 @@ type SessionItem = {
   };
 };
 
-type AuthUser = {
-  name: string;
-  role: 'expert' | 'junior';
-};
 
 export default function GhostFlowDashboard() {
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
@@ -75,6 +71,20 @@ export default function GhostFlowDashboard() {
       } catch(e) {}
     }
   }, []);
+
+  // Handle switch role without full logout
+  const handleSwitchRole = (role: 'expert' | 'junior') => {
+    if (!authUser) return;
+    const updated = { ...authUser, role };
+    localStorage.setItem('ghostflow_user', JSON.stringify(updated));
+    setAuthUser(updated);
+    setActiveMode(role);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('ghostflow_user');
+    setAuthUser(null);
+  };
 
   // ─── Expert Sessions ───
   const [sessions, setSessions] = useState<SessionItem[]>([]);
@@ -107,7 +117,19 @@ export default function GhostFlowDashboard() {
     { role: 'assistant', text: 'Halo Expert! Saya Ghost Cognitive Mentor. Rekam sesi Anda dan ekspor ke Junior Developer.' }
   ]);
   const [chatInput, setChatInput] = useState('');
-  const [geminiKey, setGeminiKey] = useState('');
+  const [geminiKey, setGeminiKey] = useState('AIzaSyBtW1yD5QoFQJFDyRtvFP12TqveaXRnR7M');
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const profileRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (profileRef.current && !profileRef.current.contains(event.target as Node)) {
+        setIsProfileOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   const handleSaveGeminiKey = (key: string) => {
     setGeminiKey(key);
@@ -131,8 +153,9 @@ export default function GhostFlowDashboard() {
   // --- Initialize & Load from File System ---
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const savedKey = localStorage.getItem('ghostflow_gemini_key') || '';
+      const savedKey = localStorage.getItem('ghostflow_gemini_key') || 'AIzaSyBtW1yD5QoFQJFDyRtvFP12TqveaXRnR7M';
       setGeminiKey(savedKey);
+      localStorage.setItem('ghostflow_gemini_key', savedKey);
     }
     if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
       setInTauri(true);
@@ -522,7 +545,7 @@ Aktivitas: ${JSON.stringify((currentSession?.activities || []).map(a => ({
 
 Tugas Anda adalah menjawab pertanyaan user berdasarkan log aktivitas kognitif expert di atas. Jelaskan mengapa expert mengambil tindakan tersebut, pola pikirnya (mindset), kerapian tata letaknya (layout), serta analisis debugging atau risetnya. Jawablah dalam Bahasa Indonesia dengan nada professional, memotivasi, dan edukatif. Jika log kognitif di atas kosong, beri tahu user untuk mengaktifkan telemetri terlebih dahulu.`;
 
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`, {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -539,17 +562,18 @@ Tugas Anda adalah menjawab pertanyaan user berdasarkan log aktivitas kognitif ex
         });
 
         const data = await response.json();
-        const replyText = data.candidates?.[0]?.content?.parts?.[0]?.text || "Maaf, tidak ada respon dari Gemini. Pastikan API Key Anda benar.";
+        const replyText = data.candidates?.[0]?.content?.parts?.[0]?.text 
+          || (data.error?.message ? `Error Gemini API: ${data.error.message}` : "Maaf, tidak ada respon dari Gemini. Pastikan API Key Anda benar.");
 
         setChatMessages(prev => {
           const filtered = prev.filter(m => m.text !== 'Thinking...');
           return [...filtered, { role: 'assistant', text: replyText }];
         });
-      } catch (err) {
+      } catch (err: any) {
         console.error("Gemini API Error:", err);
         setChatMessages(prev => {
           const filtered = prev.filter(m => m.text !== 'Thinking...');
-          return [...filtered, { role: 'assistant', text: "Gagal terhubung ke Gemini API. Silakan cek koneksi internet dan API Key Anda." }];
+          return [...filtered, { role: 'assistant', text: `Gagal terhubung ke Gemini API: ${err.message || err}` }];
         });
       }
     } else {
@@ -601,28 +625,15 @@ Tugas Anda adalah menjawab pertanyaan user berdasarkan log aktivitas kognitif ex
             <span className="text-[9px] text-zinc-600 font-mono tracking-wider block">TELEMETRY ENGINE</span>
           </div>
           <div className="h-6 w-[1px] bg-[#222228] mx-2" />
-          {/* Mode Tabs */}
-          <div className="flex items-center gap-1 bg-[#121317] border border-[#222228] p-1 rounded-xl">
-            <button
-              onClick={() => setActiveMode('expert')}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                activeMode === 'expert'
-                  ? 'bg-teal-500 text-black shadow-sm'
-                  : 'text-zinc-500 hover:text-zinc-300'
-              }`}
-            >
-              <Briefcase className="w-3.5 h-3.5" /> Expert
-            </button>
-            <button
-              onClick={() => setActiveMode('junior')}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                activeMode === 'junior'
-                  ? 'bg-violet-500 text-white shadow-sm'
-                  : 'text-zinc-500 hover:text-zinc-300'
-              }`}
-            >
-              <GraduationCap className="w-3.5 h-3.5" /> Junior
-            </button>
+          {/* Role Badge - show current locked role */}
+          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold border ${
+            activeMode === 'expert'
+              ? 'bg-teal-500/10 text-teal-400 border-teal-500/20'
+              : 'bg-violet-500/10 text-violet-400 border-violet-500/20'
+          }`}>
+            {activeMode === 'expert'
+              ? <><Briefcase className="w-3.5 h-3.5" /> Expert Workspace</>
+              : <><GraduationCap className="w-3.5 h-3.5" /> Junior Learner</>}
           </div>
         </div>
 
@@ -656,6 +667,47 @@ Tugas Anda adalah menjawab pertanyaan user berdasarkan log aktivitas kognitif ex
           <div className="px-2.5 py-1.5 rounded-lg bg-[#121317] border border-[#222228] flex items-center gap-1.5 text-[10px] font-mono text-zinc-500">
             <Cpu className="w-3 h-3" />
             <span>Wayland</span>
+          </div>
+          {/* Profile Menu */}
+          <div className="relative" ref={profileRef}>
+            <button 
+              onClick={() => setIsProfileOpen(!isProfileOpen)}
+              className="w-8 h-8 rounded-full overflow-hidden border border-[#333] hover:border-zinc-500 transition-colors flex items-center justify-center bg-violet-500/10 focus:outline-none"
+            >
+              {authUser?.avatar
+                ? <img src={authUser.avatar} alt={authUser.name} className="w-full h-full object-cover" />
+                : <User className="w-4 h-4 text-zinc-400" />}
+            </button>
+            {/* Dropdown */}
+            <div className={`absolute right-0 top-10 w-52 bg-[#111316] border border-[#2a2a35] rounded-xl shadow-2xl p-2 z-50 transition-all scale-95 origin-top-right ${
+              isProfileOpen 
+                ? 'opacity-100 scale-100 pointer-events-auto' 
+                : 'opacity-0 scale-95 pointer-events-none'
+            }`}>
+              <div className="px-3 py-2 border-b border-[#222228] mb-1">
+                <div className="text-[12px] font-semibold text-zinc-200 truncate">{authUser?.name}</div>
+                <div className="text-[10px] text-zinc-600 font-mono truncate">{(authUser as any)?.email || 'GhostFlow User'}</div>
+              </div>
+              <button 
+                onClick={() => {
+                  handleSwitchRole(activeMode === 'expert' ? 'junior' : 'expert');
+                  setIsProfileOpen(false);
+                }}
+                className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-[12px] text-zinc-400 hover:bg-[#1a1a20] hover:text-zinc-200 transition-colors text-left"
+              >
+                {activeMode === 'expert' ? <GraduationCap className="w-3.5 h-3.5" /> : <Briefcase className="w-3.5 h-3.5" />}
+                Pindah ke {activeMode === 'expert' ? 'Junior' : 'Expert'}
+              </button>
+              <button 
+                onClick={() => {
+                  handleLogout();
+                  setIsProfileOpen(false);
+                }}
+                className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-[12px] text-rose-400 hover:bg-rose-500/10 transition-colors text-left"
+              >
+                <X className="w-3.5 h-3.5" /> Logout
+              </button>
+            </div>
           </div>
         </div>
       </header>

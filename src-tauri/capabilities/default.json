@@ -3,10 +3,13 @@
   "identifier": "default",
   "description": "Default permissions for GhostFlow AI",
   "windows": [
-    "main"
+    "main",
+    "ghostflow-hint"
   ],
   "permissions": [
     "core:default",
+    "core:window:allow-set-size",
+    "core:window:allow-set-position",
     "shell:allow-spawn",
     "shell:default"
   ]
