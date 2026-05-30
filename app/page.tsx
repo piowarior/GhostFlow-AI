@@ -15,6 +15,77 @@ import rawSessionData from '../data/ghostflow_session.json';
 import JuniorDashboard from './components/JuniorDashboard';
 import LoginScreen, { type AuthUser } from './components/LoginScreen';
 
+// ─── Markdown Parser ───
+function renderMarkdown(text: string): React.ReactNode {
+  if (!text) return null;
+
+  const lines = text.split('\n');
+  const renderedElements: React.ReactNode[] = [];
+  let currentParagraphLines: string[] = [];
+
+  const flushParagraph = (key: string) => {
+    if (currentParagraphLines.length > 0) {
+      const pText = currentParagraphLines.join(' ');
+      renderedElements.push(
+        <p key={key} className="mb-2 last:mb-0 leading-relaxed text-zinc-300">
+          {parseInlineMarkdown(pText)}
+        </p>
+      );
+      currentParagraphLines = [];
+    }
+  };
+
+  const parseInlineMarkdown = (inlineText: string): React.ReactNode[] => {
+    const parts = inlineText.split(/\*\*([\s\S]*?)\*\*/g);
+    return parts.map((part, index) => {
+      if (index % 2 === 1) {
+        return <strong key={index} className="font-extrabold text-white text-shadow-sm">{part}</strong>;
+      }
+      const codeParts = part.split(/`([\s\S]*?)`/g);
+      return codeParts.map((subPart, subIdx) => {
+        if (subIdx % 2 === 1) {
+          return <code key={subIdx} className="bg-black/40 border border-white/5 rounded px-1.5 py-0.5 font-mono text-teal-400 text-[11px]">{subPart}</code>;
+        }
+        return subPart;
+      });
+    });
+  };
+
+  lines.forEach((line, index) => {
+    const trimmed = line.trim();
+
+    if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+      flushParagraph(`p-${index}`);
+      const content = trimmed.substring(2);
+      renderedElements.push(
+        <li key={`li-${index}`} className="ml-4 list-disc mb-1 text-zinc-300 leading-relaxed pl-1">
+          {parseInlineMarkdown(content)}
+        </li>
+      );
+    } 
+    else if (/^\d+\.\s/.test(trimmed)) {
+      flushParagraph(`p-${index}`);
+      const dotIndex = trimmed.indexOf('.');
+      const content = trimmed.substring(dotIndex + 1).trim();
+      renderedElements.push(
+        <li key={`ol-${index}`} className="ml-5 list-decimal mb-1 text-zinc-300 leading-relaxed pl-1">
+          {parseInlineMarkdown(content)}
+        </li>
+      );
+    }
+    else if (trimmed === '') {
+      flushParagraph(`p-${index}`);
+    } 
+    else {
+      currentParagraphLines.push(trimmed);
+    }
+  });
+
+  flushParagraph(`p-final`);
+
+  return <div className="space-y-0.5">{renderedElements}</div>;
+}
+
 type TimelineActivity = {
   activity_id: string;
   timestamp: string;
@@ -52,6 +123,26 @@ type SessionItem = {
     retry_pattern_count: number;
     total_app_switches: number;
   };
+};
+
+type EtlContainer = {
+  id: string;
+  sessionId: string;
+  title: string;
+  description: string;
+  expertName: string;
+  timestamp: string;
+  duration_seconds: number;
+  activities: TimelineActivity[];
+  raw_activities_count: number;
+  filtered_out_count: number;
+  filter_details: {
+    activity_id: string;
+    app: string;
+    title: string;
+    reason: string;
+    relevance: 'keep' | 'discard';
+  }[];
 };
 
 
@@ -94,6 +185,56 @@ export default function GhostFlowDashboard() {
   // ─── Junior Sessions ───
   const [juniorSessions, setJuniorSessions] = useState<any[]>([]);
   const [selectedJuniorSessionId, setSelectedJuniorSessionId] = useState<string>('');
+
+  // ─── Resizable Sidebars ───
+  const [leftWidth, setLeftWidth] = useState(280);
+  const [rightWidth, setRightWidth] = useState(340);
+  const [isResizingLeft, setIsResizingLeft] = useState(false);
+  const [isResizingRight, setIsResizingRight] = useState(false);
+
+  const startResizeLeft = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizingLeft(true);
+  };
+
+  const startResizeRight = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizingRight(true);
+  };
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (isResizingLeft) {
+        const newWidth = Math.max(200, Math.min(450, e.clientX));
+        setLeftWidth(newWidth);
+      }
+      if (isResizingRight) {
+        const newWidth = Math.max(240, Math.min(500, window.innerWidth - e.clientX));
+        setRightWidth(newWidth);
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingLeft(false);
+      setIsResizingRight(false);
+    };
+
+    if (isResizingLeft || isResizingRight) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+    }
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isResizingLeft, isResizingRight]);
+
+  // ─── ETL & Sinks Pipeline ───
+  const [etlContainers, setEtlContainers] = useState<EtlContainer[]>([]);
+  const [leftTab, setLeftTab] = useState<'raw' | 'etl'>('raw');
+  const [selectedEtlId, setSelectedEtlId] = useState<string | null>(null);
+  const [isEtlRunning, setIsEtlRunning] = useState(false);
 
   // ─── Telemetry ───
   const [isRecording, setIsRecording] = useState(false);
@@ -158,7 +299,23 @@ export default function GhostFlowDashboard() {
       if (savedKey) {
         localStorage.setItem('ghostflow_gemini_key', savedKey);
       }
+
+      const savedEtl = localStorage.getItem('ghostflow_etl_containers');
+      if (savedEtl) {
+        try {
+          setEtlContainers(JSON.parse(savedEtl));
+        } catch (e) {}
+      }
     }
+  }, []);
+
+  useEffect(() => {
+    if (etlContainers.length > 0) {
+      localStorage.setItem('ghostflow_etl_containers', JSON.stringify(etlContainers));
+    }
+  }, [etlContainers]);
+
+  useEffect(() => {
     if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
       setInTauri(true);
       loadAllSessionsFromFileSystem();
@@ -382,6 +539,132 @@ export default function GhostFlowDashboard() {
     }]);
   };
 
+  // ─── ETL Cognitive Processor (Gemini 2.5 Flash) ───
+  const runEtlProcess = async (session: SessionItem) => {
+    if (!session || session.activities.length === 0) {
+      alert("Aktivitas sesi kosong! Rekam koding Anda terlebih dahulu.");
+      return;
+    }
+    if (!geminiKey) {
+      alert("Silakan masukkan Gemini API Key di panel kanan terlebih dahulu.");
+      return;
+    }
+    setIsEtlRunning(true);
+    setChatMessages(prev => [...prev, { role: 'assistant', text: `⚙️ **Memulai Proses ETL Kognitif** untuk sesi "${session.title}"...\nMengidentifikasi logs dan menyaring tab/aplikasi tidak relevan.` }]);
+
+    try {
+      const systemPrompt = `Kamu adalah GhostFlow AI ETL Engine. Tugas Anda adalah menganalisis log aktivitas expert developer, memfilternya secara cerdas, membuang log tidak relevan (seperti tab hiburan, berita umum non-koding, media sosial non-dev, halaman kosong), serta menyusun wadah kognitif bersih.
+      
+      Topik Sesi: "${session.title}"
+      Deskripsi Sesi: "${session.description}"
+      
+      Log Aktivitas Mentah:
+      ${JSON.stringify(session.activities.map(a => ({
+        id: a.activity_id,
+        app: a.app_class,
+        title: a.window_title,
+      })))}
+      
+      Aturan Evaluasi:
+      1. Koding aktif, terminal, riset di StackOverflow, dokumentasi (API/Framework/Library), desain UI/UX di Figma -> Tandai sebagai RELEVAN ("keep").
+      2. Berita umum, hiburan (YouTube non-programming), media sosial, halaman tab kosong -> Tandai sebagai TIDAK RELEVAN ("discard").
+      3. Berikan alasan (max 1 kalimat) mengapa log tersebut di-keep atau di-discard.
+      
+      Kembalikan data dalam format JSON murni:
+      {
+        "filters": [
+          { "activity_id": "...", "relevance": "keep" | "discard", "reason": "..." }
+        ]
+      }`;
+
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: systemPrompt }] }]
+        })
+      });
+
+      const data = await response.json();
+      const replyText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      
+      // Parse JSON from code blocks or raw
+      const jsonMatch = replyText.match(/\{[\s\S]*\}/);
+      let parsed = null;
+      if (jsonMatch) {
+        parsed = JSON.parse(jsonMatch[0]);
+      }
+
+      if (parsed && parsed.filters) {
+        const filtersMap = new Map<string, { relevance: 'keep' | 'discard', reason: string }>();
+        parsed.filters.forEach((f: any) => {
+          filtersMap.set(f.activity_id, { relevance: f.relevance, reason: f.reason });
+        });
+
+        // Filter activities
+        const cleanActivities = session.activities.filter(a => {
+          const decision = filtersMap.get(a.activity_id);
+          return !decision || decision.relevance === 'keep';
+        });
+
+        const filterDetails = session.activities.map(a => {
+          const dec = filtersMap.get(a.activity_id);
+          return {
+            activity_id: a.activity_id,
+            app: a.app_class || 'App',
+            title: a.window_title || 'Untitled',
+            relevance: (dec?.relevance || 'keep') as 'keep' | 'discard',
+            reason: dec?.reason || 'Relevan dengan aktivitas koding'
+          };
+        });
+
+        const filteredOut = filterDetails.filter(d => d.relevance === 'discard');
+
+        const existingContainerIdx = etlContainers.findIndex(c => c.sessionId === session.id);
+        const newContainer: EtlContainer = {
+          id: existingContainerIdx !== -1 ? etlContainers[existingContainerIdx].id : `etl-${Date.now()}`,
+          sessionId: session.id,
+          title: session.title,
+          description: session.description,
+          expertName: authUser?.name || 'Expert Developer',
+          timestamp: new Date().toISOString(),
+          duration_seconds: session.duration_seconds,
+          activities: cleanActivities,
+          raw_activities_count: session.activities.length,
+          filtered_out_count: filteredOut.length,
+          filter_details: filterDetails
+        };
+
+        if (existingContainerIdx !== -1) {
+          const updated = [...etlContainers];
+          updated[existingContainerIdx] = newContainer;
+          setEtlContainers(updated);
+        } else {
+          setEtlContainers(prev => [newContainer, ...prev]);
+        }
+
+        setSelectedEtlId(newContainer.id);
+        setLeftTab('etl'); // focus on Hasil ETL tab!
+
+        // Generate chatbot feedback
+        const chatFeedback = `### ⚙️ Analisis ETL Selesai!\nSesi **"${session.title}"** berhasil diekstrak dan disaring ke dalam **Wadah Kognitif**.\n\n**Statistik Penyaringan:**\n* Total Log Mentah: \`${session.activities.length}\`\n* Log Disimpan (Relevan): \`${cleanActivities.length}\`\n* Log Dibuang (Junk): \`${filteredOut.length}\`\n\n**Log yang Dibuang:**\n${
+          filteredOut.length > 0 
+            ? filteredOut.map(f => `* **${f.app}**: "${f.title.slice(0, 45)}..."\n  _*Alasan: ${f.reason}_*`).join('\n')
+            : 'Tidak ada log yang dibuang (semua aktivitas relevan!).'
+        }\n\n*Wadah Kognitif sekarang siap untuk ditinjau dan diekspor ke Junior Developer!*`;
+        
+        setChatMessages(prev => [...prev, { role: 'assistant', text: chatFeedback }]);
+      } else {
+        throw new Error("Gagal mengurai respons AI.");
+      }
+    } catch (err: any) {
+      console.error(err);
+      setChatMessages(prev => [...prev, { role: 'assistant', text: `❌ **Gagal menjalankan ETL**: ${err.message || err}\nSilakan periksa koneksi internet Anda atau coba lagi.` }]);
+    } finally {
+      setIsEtlRunning(false);
+    }
+  };
+
   // ─── Export Session for Junior ───
   const handleExportSession = async () => {
     if (!exportingSession || !authUser) {
@@ -404,15 +687,20 @@ export default function GhostFlowDashboard() {
         title: exportingSession.title,
         description: exportingSession.description,
         expertName: expertName,
-        mode: exportingSession.mode,
+        mode: 'expert',
         timestamp: exportingSession.timestamp,
         duration_seconds: exportingSession.duration_seconds,
         activities: exportingSession.activities,
-        cognitive_signals: exportingSession.cognitive_signals,
+        cognitive_signals: {
+          fast_file_switch_count: 0,
+          research_phase_count: 0,
+          retry_pattern_count: 0,
+          total_app_switches: 0
+        }
       };
       const updated = [exportEntry, ...prev.filter((s: any) => s.id !== exportEntry.id)];
       localStorage.setItem(exportKey, JSON.stringify(updated));
-      setChatMessages(prev => [...prev, { role: 'assistant', text: `✅ Sesi "${exportingSession.title}" berhasil di-export sebagai Expert ${expertName}! Junior Developer kini bisa belajar dari sesi ini.` }]);
+      setChatMessages(prev => [...prev, { role: 'assistant', text: `✅ Wadah Kognitif **"${exportingSession.title}"** berhasil diekspor sebagai Sesi Belajar Expert **${expertName}**! Junior kini dapat melihat visualisasi rasi rasi bintang log bersih ini di dashboard mereka.` }]);
       setShowExportModal(false); setExportingSession(null);
     } catch (e) {
       alert('Gagal export: ' + e);
@@ -737,6 +1025,10 @@ Tugas Anda adalah menjawab pertanyaan user berdasarkan log aktivitas kognitif ex
             setJuniorSessions={setJuniorSessions}
             selectedJuniorSessionId={selectedJuniorSessionId}
             setSelectedJuniorSessionId={setSelectedJuniorSessionId}
+            leftWidth={leftWidth}
+            rightWidth={rightWidth}
+            startResizeLeft={startResizeLeft}
+            startResizeRight={startResizeRight}
           />
         )}
 
@@ -744,7 +1036,13 @@ Tugas Anda adalah menjawab pertanyaan user berdasarkan log aktivitas kognitif ex
         {activeMode === 'expert' && (
         <>
         {/* Gemini-style Sidebar */}
-        <div className="w-[300px] flex-shrink-0 border-r border-[#222228] bg-[#0a0a0c] flex flex-col z-10">
+        <div style={{ width: leftWidth }} className="flex-shrink-0 border-r border-[#222228] bg-[#0a0a0c] flex flex-col z-10 relative">
+          {/* Resize Handle */}
+          <div 
+            onMouseDown={startResizeLeft}
+            className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-teal-500/20 active:bg-teal-500/40 z-30 transition-colors"
+          />
+
           <div className="p-4 border-b border-[#222228] flex items-center justify-between bg-[#0d0e12]">
             <span className="text-xs font-mono text-zinc-400 tracking-wider">SESI EXPERT</span>
             <button
@@ -756,196 +1054,386 @@ Tugas Anda adalah menjawab pertanyaan user berdasarkan log aktivitas kognitif ex
             </button>
           </div>
 
+          {/* Segmented Controls for ETL Tab */}
+          <div className="flex border-b border-[#222228] bg-[#0a0a0c]">
+            <button
+              onClick={() => setLeftTab('raw')}
+              className={`flex-1 py-2 text-[10px] font-mono border-b-2 transition-all uppercase tracking-wider ${leftTab === 'raw' ? 'border-teal-500 text-teal-400 font-bold' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}
+            >
+              Sesi Mentah
+            </button>
+            <button
+              onClick={() => setLeftTab('etl')}
+              className={`flex-1 py-2 text-[10px] font-mono border-b-2 transition-all uppercase tracking-wider ${leftTab === 'etl' ? 'border-violet-500 text-violet-400 font-bold' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}
+            >
+              Hasil ETL ({etlContainers.length})
+            </button>
+          </div>
+
           {/* Sesi List Panel */}
           <div className="flex-1 overflow-y-auto p-4 space-y-3 scrollbar-hide">
-
-            {sessions.map((s, idx) => {
-              const isSelected = s.id === selectedSessionId;
-              return (
-                <div
-                  key={`${s.id}-${idx}`}
-                  onClick={() => { setSelectedSessionId(s.id); setCurrentStep(0); }}
-                  className={`w-full text-left p-4 rounded-xl flex flex-col transition-all border relative group cursor-pointer ${isSelected
-                      ? 'bg-[#181a1f] border-[#333] shadow-md'
-                      : 'bg-[#121317]/30 border-[#222228] hover:bg-[#121317]'
-                    }`}
-                >
-                  <div className="absolute top-3 right-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-[#181a1f] pl-2 rounded-l-md">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setExportingSession(s);
-                        setShowExportModal(true);
-                      }}
-                      title="Export Sesi ke Junior"
-                      className="text-zinc-500 hover:text-violet-400 p-1 rounded hover:bg-black/25 transition-all"
+            {leftTab === 'raw' ? (
+              sessions.length === 0 ? (
+                <div className="text-center py-8 text-zinc-600 font-mono text-xs">Belum ada sesi telemetry mentah. Rekam aktivitas Anda sekarang!</div>
+              ) : (
+                sessions.map((s, idx) => {
+                  const isSelected = s.id === selectedSessionId;
+                  return (
+                    <div
+                      key={`${s.id}-${idx}`}
+                      onClick={() => { setSelectedSessionId(s.id); setCurrentStep(0); }}
+                      className={`w-full text-left p-4 rounded-xl flex flex-col transition-all border relative group cursor-pointer ${isSelected
+                          ? 'bg-[#181a1f] border-[#333] shadow-md'
+                          : 'bg-[#121317]/30 border-[#222228] hover:bg-[#121317]'
+                        }`}
                     >
-                      <Upload className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      onClick={(e) => handleDeleteSession(s, e)}
-                      title="Hapus Sesi"
-                      className="text-zinc-500 hover:text-rose-400 p-1 rounded hover:bg-black/25 transition-all"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-
-                  <div className="flex items-center justify-between mb-2 pr-14">
-                    <span className={`text-[9px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider ${s.mode === 'expert'
-                        ? 'bg-teal-500/10 text-teal-400 border-teal-500/20'
-                        : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
-                      }`}>
-                      {s.mode}
-                    </span>
-                    <span className="text-[10px] text-zinc-500 font-mono">
-                      {formatTime(s.duration_seconds)}
-                    </span>
-                  </div>
-
-                  <h3 className={`text-[13px] font-semibold leading-snug mb-1 ${isSelected ? 'text-zinc-200' : 'text-zinc-400'}`}>
-                    {s.title}
-                  </h3>
-
-                  <p className="text-[11px] text-zinc-500 line-clamp-2 leading-relaxed">
-                    {s.description}
-                  </p>
-
-                  {isSelected && s.activities.length > 0 && (
-                    <div className="mt-3.5 pt-3 border-t border-[#222228] space-y-1.5 max-h-48 overflow-y-auto scrollbar-hide">
-                      <div className="text-[9px] text-zinc-500 uppercase tracking-widest mb-1.5 font-bold">Langkah Aktivitas</div>
-                      {s.activities.map((act, i) => (
-                        <div
-                          key={act.activity_id}
-                          onClick={(e) => { e.stopPropagation(); setCurrentStep(i); }}
-                          className={`px-2.5 py-1.5 rounded font-mono text-[11px] flex items-center justify-between transition-colors ${currentStep === i
-                              ? 'bg-teal-500/10 text-teal-400 border border-teal-500/20'
-                              : 'hover:bg-black/30 text-zinc-500'
-                            }`}
+                      <div className="absolute top-3 right-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-[#181a1f] pl-2 rounded-l-md">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            runEtlProcess(s);
+                          }}
+                          title="Proses ETL Kognitif"
+                          className="text-zinc-500 hover:text-teal-400 p-1 rounded hover:bg-black/25 transition-all"
                         >
-                          <span className="truncate pr-2">{act.window_title || act.description}</span>
-                          <span className="text-[9px] text-zinc-600 flex-shrink-0">
-                            {new Date(act.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+                          <BrainCircuit className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={(e) => handleDeleteSession(s, e)}
+                          title="Hapus Sesi"
+                          className="text-zinc-500 hover:text-rose-400 p-1 rounded hover:bg-black/25 transition-all"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
 
+                      <div className="flex items-center justify-between mb-2 pr-14">
+                        <span className={`text-[9px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider ${s.mode === 'expert'
+                            ? 'bg-teal-500/10 text-teal-400 border-teal-500/20'
+                            : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
+                          }`}>
+                          {s.mode}
+                        </span>
+                        <span className="text-[10px] text-zinc-500 font-mono">
+                          {formatTime(s.duration_seconds)}
+                        </span>
+                      </div>
+
+                      <h3 className={`text-[13px] font-semibold leading-snug mb-1 ${isSelected ? 'text-zinc-200' : 'text-zinc-400'}`}>
+                        {s.title}
+                      </h3>
+
+                      <p className="text-[11px] text-zinc-500 line-clamp-2 leading-relaxed">
+                        {s.description}
+                      </p>
+
+                      {isSelected && s.activities.length > 0 && (
+                        <div className="mt-3.5 pt-3 border-t border-[#222228] space-y-1.5 max-h-48 overflow-y-auto scrollbar-hide">
+                          <div className="text-[9px] text-zinc-500 uppercase tracking-widest mb-1.5 font-bold">Langkah Aktivitas</div>
+                          {s.activities.map((act, i) => (
+                            <div
+                              key={act.activity_id}
+                              onClick={(e) => { e.stopPropagation(); setCurrentStep(i); }}
+                              className={`px-2.5 py-1.5 rounded font-mono text-[11px] flex items-center justify-between transition-colors ${currentStep === i
+                                  ? 'bg-teal-500/10 text-teal-400 border border-teal-500/20'
+                                  : 'hover:bg-black/30 text-zinc-500'
+                                }`}
+                            >
+                              <span className="truncate pr-2">{act.window_title || act.description}</span>
+                              <span className="text-[9px] text-zinc-600 flex-shrink-0">
+                                {new Date(act.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )
+            ) : (
+              etlContainers.length === 0 ? (
+                <div className="text-center py-8 text-zinc-600 font-mono text-xs">Belum ada wadah ETL kognitif bersih. Klik ikon AI di Sesi Mentah untuk memproses!</div>
+              ) : (
+                etlContainers.map((c, idx) => {
+                  const isSelected = c.id === selectedEtlId;
+                  return (
+                    <div
+                      key={`${c.id}-${idx}`}
+                      onClick={() => { setSelectedEtlId(c.id); }}
+                      className={`w-full text-left p-4 rounded-xl flex flex-col transition-all border relative group cursor-pointer ${isSelected
+                          ? 'bg-violet-950/10 border-violet-500/30 shadow-md'
+                          : 'bg-[#121317]/30 border-[#222228] hover:bg-[#121317]'
+                        }`}
+                    >
+                      <div className="absolute top-3 right-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-[#181a1f] pl-2 rounded-l-md">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setExportingSession(c as any);
+                            setShowExportModal(true);
+                          }}
+                          title="Export Wadah"
+                          className="text-zinc-500 hover:text-violet-400 p-1 rounded hover:bg-black/25 transition-all"
+                        >
+                          <Upload className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEtlContainers(prev => prev.filter(item => item.id !== c.id));
+                            if (selectedEtlId === c.id) setSelectedEtlId(null);
+                          }}
+                          title="Hapus Wadah"
+                          className="text-zinc-500 hover:text-rose-400 p-1 rounded hover:bg-black/25 transition-all"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      <div className="flex items-center justify-between mb-2 pr-14">
+                        <span className="text-[9px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider bg-violet-500/10 text-violet-400 border-violet-500/20">
+                          ETL CLEAN
+                        </span>
+                        <span className="text-[10px] text-zinc-500 font-mono">
+                          {formatTime(c.duration_seconds)}
+                        </span>
+                      </div>
+
+                      <h3 className={`text-[13px] font-semibold leading-snug mb-1 ${isSelected ? 'text-zinc-200' : 'text-zinc-400'}`}>
+                        {c.title}
+                      </h3>
+
+                      <div className="flex items-center gap-1.5 my-1.5 text-[9px] font-mono text-zinc-400 bg-black/25 py-1 px-2 rounded border border-white/5 w-fit">
+                        <span className="text-teal-400">{c.activities.length} Keep</span>
+                        <span className="text-zinc-600">•</span>
+                        <span className="text-rose-400">{c.filtered_out_count} Discarded</span>
+                      </div>
+
+                      <p className="text-[11px] text-zinc-500 line-clamp-2 leading-relaxed">
+                        {c.description}
+                      </p>
+                    </div>
+                  );
+                })
+              )
+            )}
           </div>
         </div>
 
         {/* --- Center Morphic Inspector --- */}
         <div className="flex-1 bg-[#0f1115] p-8 flex flex-col overflow-y-auto scrollbar-hide">
 
-          {currentSession ? (
-            <>
-              <div className="flex items-center justify-between mb-6 flex-shrink-0 border-b border-[#222228]/50 pb-4">
-                <div className="flex flex-col">
-                  <h2 className="text-lg font-medium text-zinc-100 flex items-center">
-                    Morphic Workspace Inspector
-                    {activeActivity && (
-                      <span className="ml-4 px-2.5 py-0.5 text-[10px] bg-[#181a1f] text-zinc-400 rounded-lg border border-[#2a2a32] font-mono">
-                        {activeActivity.activity_type || activeActivity.type || 'IDLE'}
-                      </span>
+          {leftTab === 'raw' ? (
+            currentSession ? (
+              <>
+                <div className="flex items-center justify-between mb-6 flex-shrink-0 border-b border-[#222228]/50 pb-4">
+                  <div className="flex flex-col">
+                    <h2 className="text-lg font-medium text-zinc-100 flex items-center">
+                      Morphic Workspace Inspector
+                      {activeActivity && (
+                        <span className="ml-4 px-2.5 py-0.5 text-[10px] bg-[#181a1f] text-zinc-400 rounded-lg border border-[#2a2a32] font-mono">
+                          {activeActivity.activity_type || activeActivity.type || 'IDLE'}
+                        </span>
+                      )}
+                    </h2>
+                    <p className="text-[12px] text-zinc-500 mt-1 font-mono">{currentSession.title} ({currentSession.activities.length} logs)</p>
+                  </div>
+                  
+                  <button
+                    onClick={() => runEtlProcess(currentSession)}
+                    disabled={isEtlRunning}
+                    className="flex items-center gap-2 px-4 py-2 bg-teal-600 hover:bg-teal-500 active:scale-95 text-black font-bold rounded-xl text-xs shadow-lg transition-all font-mono disabled:opacity-50"
+                  >
+                    {isEtlRunning ? (
+                      <>
+                        <span className="w-3.5 h-3.5 border-2 border-black border-t-transparent rounded-full animate-spin" />
+                        <span>PROSES ETL...</span>
+                      </>
+                    ) : (
+                      <>
+                        <BrainCircuit className="w-3.5 h-3.5" />
+                        <span>PROSES ETL KOGNITIF</span>
+                      </>
                     )}
-                  </h2>
-                  <p className="text-[12px] text-zinc-500 mt-1 font-mono">{currentSession.title} ({currentSession.activities.length} logs)</p>
+                  </button>
                 </div>
-                
-                <button
-                  onClick={() => {
-                    setExportingSession(currentSession);
-                    setExportExpertName(localStorage.getItem('ghostflow_expert_name') || '');
-                    setShowExportModal(true);
-                  }}
-                  className="flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-500 active:scale-95 text-white font-bold rounded-xl text-xs shadow-lg shadow-violet-950/20 transition-all font-mono"
-                >
-                  <Upload className="w-3.5 h-3.5" />
-                  <span>EXPORT SESI KE JUNIOR</span>
-                </button>
-              </div>
 
-              <div className="flex-1 relative min-h-[400px]">
-                <AnimatePresence mode="wait">
-                  {activeActivity ? (
-                    <motion.div
-                      key={activeActivity.activity_id}
-                      initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} transition={transition}
-                      className="w-full h-full min-h-[400px] flex items-center justify-center bg-[#181a1f] rounded-2xl border border-[#222228] p-8 shadow-sm"
-                    >
-                      <div className="max-w-lg w-full flex flex-col items-center text-center">
-                        <div className="w-20 h-20 bg-[#212329] rounded-2xl flex items-center justify-center mb-6 border border-[#2a2a32] shadow-lg relative">
-                          {activeActivity.app_class?.includes('Chrome') || activeActivity.layout_state?.focused_app?.includes('Chrome') ? <Search className="w-10 h-10 text-sky-400" /> :
-                            activeActivity.app_class?.includes('Docker') || activeActivity.layout_state?.focused_app?.includes('Docker') ? <Server className="w-10 h-10 text-indigo-400" /> :
-                              activeActivity.app_class?.includes('VS Code') || activeActivity.layout_state?.focused_app?.includes('VS Code') ? <FileCode className="w-10 h-10 text-teal-400" /> :
-                                activeActivity.app_class?.includes('Terminal') || activeActivity.layout_state?.focused_app?.includes('Terminal') ? <Terminal className="w-10 h-10 text-zinc-400" /> :
-                                  activeActivity.app_class?.includes('Figma') || activeActivity.layout_state?.focused_app?.includes('Figma') ? <Layout className="w-10 h-10 text-purple-400" /> :
-                                    activeActivity.app_class?.includes('Git') ? <CheckCircle className="w-10 h-10 text-orange-400" /> :
-                                      <Activity className="w-10 h-10 text-zinc-500" />}
+                <div className="flex-1 relative min-h-[400px]">
+                  <AnimatePresence mode="wait">
+                    {activeActivity ? (
+                      <motion.div
+                        key={activeActivity.activity_id}
+                        initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} transition={transition}
+                        className="w-full h-full min-h-[400px] flex items-center justify-center bg-[#181a1f] rounded-2xl border border-[#222228] p-8 shadow-sm"
+                      >
+                        <div className="max-w-lg w-full flex flex-col items-center text-center">
+                          <div className="w-20 h-20 bg-[#212329] rounded-2xl flex items-center justify-center mb-6 border border-[#2a2a32] shadow-lg relative">
+                            {activeActivity.app_class?.includes('Chrome') || activeActivity.layout_state?.focused_app?.includes('Chrome') ? <Search className="w-10 h-10 text-sky-400" /> :
+                              activeActivity.app_class?.includes('Docker') || activeActivity.layout_state?.focused_app?.includes('Docker') ? <Server className="w-10 h-10 text-indigo-400" /> :
+                                activeActivity.app_class?.includes('VS Code') || activeActivity.layout_state?.focused_app?.includes('VS Code') ? <FileCode className="w-10 h-10 text-teal-400" /> :
+                                  activeActivity.app_class?.includes('Terminal') || activeActivity.layout_state?.focused_app?.includes('Terminal') ? <Terminal className="w-10 h-10 text-zinc-400" /> :
+                                    activeActivity.app_class?.includes('Figma') || activeActivity.layout_state?.focused_app?.includes('Figma') ? <Layout className="w-10 h-10 text-purple-400" /> :
+                                      activeActivity.app_class?.includes('Git') ? <CheckCircle className="w-10 h-10 text-orange-400" /> :
+                                        <Activity className="w-10 h-10 text-zinc-500" />}
 
-                          {isRecording && (
-                            <span className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full animate-ping"></span>
-                          )}
-                        </div>
-
-                        <h3 className="text-xl font-medium text-zinc-100 mb-2">{activeActivity.app_class || activeActivity.layout_state?.focused_app || 'Application View'}</h3>
-                        <p className="text-zinc-400 mb-8 text-[13px] leading-relaxed font-mono max-w-md">{activeActivity.window_title || activeActivity.description}</p>
-
-                        <div className="w-full bg-[#121317] rounded-xl p-5 text-left border border-[#222228] shadow-inner font-mono text-[13px]">
-                          <div className="text-[10px] text-zinc-500 mb-4 font-bold uppercase tracking-wider">Live Metrics Data</div>
-
-                          <div className="grid grid-cols-2 gap-4 text-zinc-300">
-                            <div className="flex items-center"><Activity className="w-4 h-4 mr-2 text-amber-500/70" /> Type: {activeActivity.activity_type || activeActivity.type}</div>
-                            <div className="flex items-center"><Clock className="w-4 h-4 mr-2 text-zinc-500" /> Duration: {activeActivity.duration_ms ? `${(activeActivity.duration_ms / 1000).toFixed(1)}s` : 'Background'}</div>
-                            <div className="flex items-center"><Layout className="w-4 h-4 mr-2 text-indigo-400" /> Mode: {activeActivity.layout_state?.screen_mode}</div>
-                            <div className="flex items-center"><Sparkles className="w-4 h-4 mr-2 text-teal-400" /> Ratio: {activeActivity.layout_state?.split_ratio || '100:0'}</div>
+                            {isRecording && (
+                              <span className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full animate-ping"></span>
+                            )}
                           </div>
 
-                          {activeActivity.details && (
-                            <div className="mt-4">
-                              <div className="text-[10px] text-zinc-500 mb-2 font-bold uppercase tracking-wider">Payload Context</div>
-                              <pre className="text-[11px] text-zinc-400 overflow-auto max-h-36 p-3.5 bg-black/40 rounded-lg border border-white/5 whitespace-pre-wrap leading-relaxed">
-                                {JSON.stringify(activeActivity.details, null, 2)}
-                              </pre>
+                          <h3 className="text-xl font-medium text-zinc-100 mb-2">{activeActivity.app_class || activeActivity.layout_state?.focused_app || 'Application View'}</h3>
+                          <p className="text-zinc-400 mb-8 text-[13px] leading-relaxed font-mono max-w-md">{activeActivity.window_title || activeActivity.description}</p>
+
+                          <div className="w-full bg-[#121317] rounded-xl p-5 text-left border border-[#222228] shadow-inner font-mono text-[13px]">
+                            <div className="text-[10px] text-zinc-500 mb-4 font-bold uppercase tracking-wider">Live Metrics Data</div>
+
+                            <div className="grid grid-cols-2 gap-4 text-zinc-300">
+                              <div className="flex items-center"><Activity className="w-4 h-4 mr-2 text-amber-500/70" /> Type: {activeActivity.activity_type || activeActivity.type}</div>
+                              <div className="flex items-center"><Clock className="w-4 h-4 mr-2 text-zinc-500" /> Duration: {activeActivity.duration_ms ? `${(activeActivity.duration_ms / 1000).toFixed(1)}s` : 'Background'}</div>
+                              <div className="flex items-center"><Layout className="w-4 h-4 mr-2 text-indigo-400" /> Mode: {activeActivity.layout_state?.screen_mode}</div>
+                              <div className="flex items-center"><Sparkles className="w-4 h-4 mr-2 text-teal-400" /> Ratio: {activeActivity.layout_state?.split_ratio || '100:0'}</div>
                             </div>
-                          )}
+
+                            {activeActivity.details && (
+                              <div className="mt-4">
+                                <div className="text-[10px] text-zinc-500 mb-2 font-bold uppercase tracking-wider">Payload Context</div>
+                                <pre className="text-[11px] text-zinc-400 overflow-auto max-h-36 p-3.5 bg-black/40 rounded-lg border border-white/5 whitespace-pre-wrap leading-relaxed">
+                                  {JSON.stringify(activeActivity.details, null, 2)}
+                                </pre>
+                              </div>
+                            )}
+                          </div>
                         </div>
+                      </motion.div>
+                    ) : (
+                      <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 font-mono text-sm border border-dashed border-[#222228] rounded-2xl p-8 text-center">
+                        <Folder className="w-12 h-12 text-zinc-800 mb-4" />
+                        {currentSession.activities.length === 0 ? (
+                          <span>
+                            Sesi ini masih kosong.<br />
+                            Nyalakan <b>"Perekaman Telemetri Kognitif"</b> di bagian atas untuk merekam kegiatan koding Anda secara real-time.
+                          </span>
+                        ) : (
+                          <span>Tidak ada langkah aktivitas yang terpilih. Silakan klik salah satu baris di sidebar.</span>
+                        )}
                       </div>
-                    </motion.div>
-                  ) : (
-                    <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 font-mono text-sm border border-dashed border-[#222228] rounded-2xl p-8 text-center">
-                      <Folder className="w-12 h-12 text-zinc-800 mb-4" />
-                      {currentSession.activities.length === 0 ? (
-                        <span>
-                          Sesi ini masih kosong.<br />
-                          Nyalakan <b>"Perekaman Telemetri Kognitif"</b> di bagian atas untuk merekam kegiatan koding Anda secara real-time.
-                        </span>
-                      ) : (
-                        <span>Tidak ada langkah aktivitas yang terpilih. Silakan klik salah satu baris di sidebar.</span>
-                      )}
-                    </div>
-                  )}
-                </AnimatePresence>
+                    )}
+                  </AnimatePresence>
+                </div>
+              </>
+            ) : (
+              <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 font-mono text-sm border border-dashed border-[#222228] rounded-2xl p-8 text-center">
+                <Sparkles className="w-12 h-12 text-zinc-800 mb-4" />
+                <span>
+                  Tidak ada sesi aktif.<br />
+                  Silakan klik tombol <b>"+ Sesi Baru"</b> di sidebar kiri untuk membuat sesi pencatatan koding!
+                </span>
               </div>
-            </>
+            )
           ) : (
-            <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 font-mono text-sm border border-dashed border-[#222228] rounded-2xl p-8 text-center">
-              <Sparkles className="w-12 h-12 text-zinc-800 mb-4" />
-              <span>
-                Tidak ada sesi aktif.<br />
-                Silakan klik tombol <b>"+ Sesi Baru"</b> di sidebar kiri untuk membuat sesi pencatatan koding!
-              </span>
-            </div>
+            // --- Hasil ETL Wadah Tab Selected ---
+            (() => {
+              const currentEtl = etlContainers.find(c => c.id === selectedEtlId);
+              if (!currentEtl) {
+                return (
+                  <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 font-mono text-sm border border-dashed border-[#222228] rounded-2xl p-8 text-center">
+                    <Sparkles className="w-12 h-12 text-zinc-800/40 mb-4" />
+                    <span>
+                      Belum ada Wadah ETL yang terpilih.<br />
+                      Silakan klik salah satu wadah berlabel <b>ETL CLEAN</b> di panel kiri.
+                    </span>
+                  </div>
+                );
+              }
+              return (
+                <>
+                  <div className="flex items-center justify-between mb-6 flex-shrink-0 border-b border-[#222228]/50 pb-4">
+                    <div className="flex flex-col">
+                      <h2 className="text-lg font-medium text-zinc-100 flex items-center">
+                        Wadah Kognitif Hasil ETL
+                        <span className="ml-4 px-2.5 py-0.5 text-[10px] bg-violet-950/20 text-violet-400 rounded-lg border border-violet-500/20 font-mono font-bold">
+                          AI SANITIZED
+                        </span>
+                      </h2>
+                      <p className="text-[12px] text-zinc-500 mt-1 font-mono">{currentEtl.title} (Saringan Sesi Expert)</p>
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        setExportingSession(currentEtl as any);
+                        setExportExpertName(localStorage.getItem('ghostflow_expert_name') || '');
+                        setShowExportModal(true);
+                      }}
+                      className="flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-500 active:scale-95 text-white font-bold rounded-xl text-xs shadow-lg transition-all font-mono"
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>EXPORT WADAH KE JUNIOR</span>
+                    </button>
+                  </div>
+
+                  <div className="space-y-6">
+                    {/* ETL Statistics Card */}
+                    <div className="bg-[#121317] border border-[#222228] rounded-2xl p-6 grid grid-cols-3 gap-6 font-mono">
+                      <div className="flex flex-col">
+                        <span className="text-[10px] text-zinc-500 uppercase">Total Log Mentah</span>
+                        <span className="text-2xl font-bold text-zinc-100 mt-1">{currentEtl.raw_activities_count}</span>
+                      </div>
+                      <div className="flex flex-col border-l border-[#222228] pl-6">
+                        <span className="text-[10px] text-zinc-500 uppercase">Log Relevan (Disimpan)</span>
+                        <span className="text-2xl font-bold text-teal-400 mt-1">{currentEtl.activities.length}</span>
+                      </div>
+                      <div className="flex flex-col border-l border-[#222228] pl-6">
+                        <span className="text-[10px] text-zinc-500 uppercase">Log Sampah (Dibuang)</span>
+                        <span className="text-2xl font-bold text-rose-400 mt-1">{currentEtl.filtered_out_count}</span>
+                      </div>
+                    </div>
+
+                    {/* Filter Details List */}
+                    <div className="bg-[#181a1f] border border-[#222228] rounded-2xl p-6">
+                      <h3 className="text-sm font-semibold text-zinc-200 mb-4 flex items-center gap-2">
+                        <BrainCircuit className="w-4 h-4 text-violet-400" /> Detail Penyaringan Kognitif AI
+                      </h3>
+                      <div className="space-y-3 max-h-[450px] overflow-y-auto pr-1">
+                        {currentEtl.filter_details.map((f, i) => (
+                          <div key={i} className={`p-4 rounded-xl border font-mono text-[12px] flex items-start gap-4 transition-all ${
+                            f.relevance === 'keep' 
+                              ? 'bg-teal-950/5 border-teal-500/10' 
+                              : 'bg-rose-950/5 border-rose-500/10 opacity-60'
+                          }`}>
+                            <div className={`px-2.5 py-1 rounded text-[9px] font-bold uppercase tracking-wider flex-shrink-0 mt-0.5 ${
+                              f.relevance === 'keep' 
+                                ? 'bg-teal-500/15 text-teal-300' 
+                                : 'bg-rose-500/15 text-rose-300'
+                            }`}>
+                              {f.relevance}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className="font-semibold text-zinc-300 truncate max-w-[120px] bg-black/30 px-1.5 py-0.5 rounded border border-white/5 text-[10px]">{f.app}</span>
+                                <span className="text-zinc-500 text-[11px] truncate">{f.title}</span>
+                              </div>
+                              <p className="text-[11px] text-zinc-400 italic">Alasan: {f.reason}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </>
+              );
+            })()
           )}
 
         </div>
 
         {/* --- Right Cognitive Advisor Panel --- */}
-        <div className="w-[320px] flex-shrink-0 border-l border-[#222228] bg-[#0a0a0c] flex flex-col hidden lg:flex z-10">
+        <div style={{ width: rightWidth }} className="flex-shrink-0 border-l border-[#222228] bg-[#0a0a0c] flex flex-col hidden lg:flex z-10 relative">
+          {/* Resize Handle */}
+          <div 
+            onMouseDown={startResizeRight}
+            className="absolute left-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-teal-500/20 active:bg-teal-500/40 z-30 transition-colors"
+          />
 
           <AnimatePresence mode="wait">
             <motion.div
@@ -1146,9 +1634,9 @@ Tugas Anda adalah menjawab pertanyaan user berdasarkan log aktivitas kognitif ex
                       <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                         <div className={`max-w-[85%] p-3 text-[12px] leading-relaxed rounded-xl ${msg.role === 'user'
                             ? 'bg-teal-950/20 border border-teal-500/10 text-teal-100 font-mono'
-                            : 'bg-[#181a1f] border border-[#222228] text-zinc-400 font-mono'
+                            : 'bg-[#181a1f] border border-[#222228] text-zinc-300'
                           }`}>
-                          {msg.text}
+                          {renderMarkdown(msg.text)}
                         </div>
                       </div>
                     ))}

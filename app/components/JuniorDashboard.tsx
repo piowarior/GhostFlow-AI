@@ -10,6 +10,77 @@ import {
 import StarConstellationView from './StarConstellationView';
 import FloatingHintSidebar from './FloatingHintSidebar';
 
+// ─── Markdown Parser ───
+function renderMarkdown(text: string): React.ReactNode {
+  if (!text) return null;
+
+  const lines = text.split('\n');
+  const renderedElements: React.ReactNode[] = [];
+  let currentParagraphLines: string[] = [];
+
+  const flushParagraph = (key: string) => {
+    if (currentParagraphLines.length > 0) {
+      const pText = currentParagraphLines.join(' ');
+      renderedElements.push(
+        <p key={key} className="mb-2 last:mb-0 leading-relaxed text-zinc-300">
+          {parseInlineMarkdown(pText)}
+        </p>
+      );
+      currentParagraphLines = [];
+    }
+  };
+
+  const parseInlineMarkdown = (inlineText: string): React.ReactNode[] => {
+    const parts = inlineText.split(/\*\*([\s\S]*?)\*\*/g);
+    return parts.map((part, index) => {
+      if (index % 2 === 1) {
+        return <strong key={index} className="font-extrabold text-white text-shadow-sm">{part}</strong>;
+      }
+      const codeParts = part.split(/`([\s\S]*?)`/g);
+      return codeParts.map((subPart, subIdx) => {
+        if (subIdx % 2 === 1) {
+          return <code key={subIdx} className="bg-black/40 border border-white/5 rounded px-1.5 py-0.5 font-mono text-teal-400 text-[11px]">{subPart}</code>;
+        }
+        return subPart;
+      });
+    });
+  };
+
+  lines.forEach((line, index) => {
+    const trimmed = line.trim();
+
+    if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+      flushParagraph(`p-${index}`);
+      const content = trimmed.substring(2);
+      renderedElements.push(
+        <li key={`li-${index}`} className="ml-4 list-disc mb-1 text-zinc-300 leading-relaxed pl-1">
+          {parseInlineMarkdown(content)}
+        </li>
+      );
+    } 
+    else if (/^\d+\.\s/.test(trimmed)) {
+      flushParagraph(`p-${index}`);
+      const dotIndex = trimmed.indexOf('.');
+      const content = trimmed.substring(dotIndex + 1).trim();
+      renderedElements.push(
+        <li key={`ol-${index}`} className="ml-5 list-decimal mb-1 text-zinc-300 leading-relaxed pl-1">
+          {parseInlineMarkdown(content)}
+        </li>
+      );
+    }
+    else if (trimmed === '') {
+      flushParagraph(`p-${index}`);
+    } 
+    else {
+      currentParagraphLines.push(trimmed);
+    }
+  });
+
+  flushParagraph(`p-final`);
+
+  return <div className="space-y-0.5">{renderedElements}</div>;
+}
+
 // ─── Types ───
 type TimelineActivity = {
   activity_id: string; timestamp: string; phase?: string; type?: string;
@@ -42,6 +113,10 @@ type Props = {
   setJuniorSessions: React.Dispatch<React.SetStateAction<JuniorSession[]>>;
   selectedJuniorSessionId: string;
   setSelectedJuniorSessionId: (id: string) => void;
+  leftWidth: number;
+  rightWidth: number;
+  startResizeLeft: (e: React.MouseEvent) => void;
+  startResizeRight: (e: React.MouseEvent) => void;
 };
 
 const formatTime = (s: number) => `${Math.floor(s / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`;
@@ -49,6 +124,7 @@ const formatTime = (s: number) => `${Math.floor(s / 60).toString().padStart(2, '
 export default function JuniorDashboard({
   inTauri, geminiKey, isRecording, duration, onToggleRecording,
   juniorSessions, setJuniorSessions, selectedJuniorSessionId, setSelectedJuniorSessionId,
+  leftWidth, rightWidth, startResizeLeft, startResizeRight,
 }: Props) {
   const [exportedExperts, setExportedExperts] = useState<ExpertSession[]>([]);
   const [selectedExpertId, setSelectedExpertId] = useState<string>('');
@@ -290,7 +366,12 @@ Jawab dalam Bahasa Indonesia, profesional dan memotivasi. Jika ada data expert, 
   return (
     <div className="flex-1 flex overflow-hidden">
       {/* ── Left Sidebar: Expert Picker ── */}
-      <div className="w-[280px] flex-shrink-0 border-r border-[#222228] bg-[#0a0a0c] flex flex-col">
+      <div style={{ width: leftWidth }} className="flex-shrink-0 border-r border-[#222228] bg-[#0a0a0c] flex flex-col relative">
+        {/* Resize handle */}
+        <div 
+          onMouseDown={startResizeLeft}
+          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-violet-500/20 active:bg-violet-500/40 z-30 transition-colors"
+        />
         <div className="p-4 border-b border-[#222228] bg-[#0d0e12]">
           <span className="text-[10px] font-mono text-zinc-400 uppercase tracking-widest block mb-3">Pilih Expert</span>
           {uniqueExperts.length === 0 ? (
@@ -402,7 +483,12 @@ Jawab dalam Bahasa Indonesia, profesional dan memotivasi. Jika ada data expert, 
       </div>
 
       {/* ── Right Panel: Chat ── */}
-      <div className="w-[300px] flex-shrink-0 border-l border-[#222228] bg-[#0a0a0c] flex flex-col">
+      <div style={{ width: rightWidth }} className="flex-shrink-0 border-l border-[#222228] bg-[#0a0a0c] flex flex-col relative">
+        {/* Resize handle */}
+        <div 
+          onMouseDown={startResizeRight}
+          className="absolute left-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-violet-500/20 active:bg-violet-500/40 z-30 transition-colors"
+        />
         <div className="p-4 border-b border-[#222228] bg-[#0d0e12] flex items-center justify-between">
           <span className="text-[10px] font-mono text-zinc-400 uppercase tracking-widest flex items-center gap-2">
             <MessageSquare className="w-3.5 h-3.5" /> Junior Chat
@@ -414,8 +500,8 @@ Jawab dalam Bahasa Indonesia, profesional dan memotivasi. Jika ada data expert, 
         <div className="flex-1 overflow-y-auto p-4 space-y-3 scrollbar-hide">
           {chatMessages.map((msg, i) => (
             <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[85%] p-3 text-[12px] leading-relaxed rounded-xl font-mono ${msg.role === 'user' ? 'bg-violet-950/30 border border-violet-500/20 text-violet-100' : 'bg-[#181a1f] border border-[#222228] text-zinc-400'}`}>
-                {msg.text}
+              <div className={`max-w-[85%] p-3 text-[12px] leading-relaxed rounded-xl ${msg.role === 'user' ? 'bg-violet-950/30 border border-violet-500/20 text-violet-100 font-mono' : 'bg-[#181a1f] border border-[#222228] text-zinc-300'}`}>
+                {renderMarkdown(msg.text)}
               </div>
             </div>
           ))}
