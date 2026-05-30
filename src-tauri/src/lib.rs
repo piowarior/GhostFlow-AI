@@ -86,6 +86,9 @@ pub struct TelemetryEngine {
     unique_apps: Arc<Mutex<Vec<String>>>,
     cognitive: Arc<Mutex<CognitiveSignals>>,
     
+    // Active Session ID - to prevent multiple sessions recording simultaneously
+    active_session_id: Arc<Mutex<Option<String>>>,
+    
     // State-Change Observer
     last_window_title: Arc<Mutex<String>>,
     last_git_hash: Arc<Mutex<String>>,
@@ -115,6 +118,7 @@ impl TelemetryEngine {
                 retry_pattern_count: 0,
                 total_app_switches: 0,
             })),
+            active_session_id: Arc::new(Mutex::new(None)),
             last_window_title: Arc::new(Mutex::new(String::new())),
             last_git_hash: Arc::new(Mutex::new(String::new())),
             last_active_processes: Arc::new(Mutex::new(Vec::new())),
@@ -216,8 +220,8 @@ impl TelemetryEngine {
                 let now = Utc::now();
                 let project_path = proj_dir.lock().unwrap().clone();
 
-                // Get Current Git Hash/Status as state checker
-                let current_git_status = get_git_status_output(&project_path);
+                // Get Current Git Hash/Status as state checker (only tracked & changed files)
+                let current_git_status = get_git_status_hash(&project_path);
                 
                 // Fetch strict whitelisted processes
                 let current_processes = get_strict_whitelisted_processes();
@@ -698,6 +702,10 @@ impl TelemetryEngine {
             Vec::new()
         }
     }
+
+    pub fn get_active_session_id(&self) -> Option<String> {
+        self.active_session_id.lock().unwrap().clone()
+    }
 }
 
 // ── Directory & Process Polling Helper Functions ──
@@ -918,6 +926,36 @@ fn get_git_status_output(project_dir: &str) -> String {
         .unwrap_or_default()
 }
 
+// Improved: Hash only TRACKED & CHANGED files, ignore untracked (??)
+fn get_git_status_hash(project_dir: &str) -> String {
+    let status = get_git_status_output(project_dir);
+    
+    // Filter out untracked files (??) and keep only actual changes (M, A, D, R, etc)
+    let changed_files: Vec<&str> = status
+        .lines()
+        .filter(|line| {
+            // Only track files with actual modifications:
+            // M  = modified
+            // A  = added (to index)
+            // D  = deleted
+            // R  = renamed
+            // MM = modified in index & working tree
+            // AM = added in index, modified in working tree
+            // Exclude ?? (untracked) and spaces
+            let first_two = line.get(0..2).unwrap_or("");
+            first_two != "??" && !first_two.trim().is_empty()
+        })
+        .collect();
+    
+    // If no actual changes, return empty string (no real modifications)
+    if changed_files.is_empty() {
+        return String::new();
+    }
+    
+    // Hash the changed files list
+    format!("{:?}", changed_files)
+}
+
 fn get_active_window_info() -> (String, String, String) {
     let win_id_output = Command::new("xprop")
         .args(["-root", "_NET_ACTIVE_WINDOW"])
@@ -980,51 +1018,86 @@ fn classify_app(wm_class: &str, wm_name: &str) -> String {
     let class_lower = wm_class.to_lowercase();
     let name_lower = wm_name.to_lowercase();
 
-    // Check window title/name first for apps that may appear under generic WM classes
-    if name_lower.contains("antigravity") || class_lower.contains("antigravity") {
+    // Priority 1: Check exact window title patterns first (most reliable for some apps)
+    // This catches Antigravity, Cursor, and other apps that identify via title
+    if name_lower.contains("antigravity") {
         return "Antigravity".to_string();
     }
-    if name_lower.contains("cursor") && (name_lower.ends_with(".tsx") || name_lower.ends_with(".ts") || name_lower.ends_with(".rs") || name_lower.ends_with(".py") || name_lower.contains("— cursor")) {
+    if class_lower.contains("antigravity") {
+        return "Antigravity".to_string();
+    }
+    
+    if name_lower.contains("cursor") && (
+        name_lower.ends_with(".tsx") || 
+        name_lower.ends_with(".ts") || 
+        name_lower.ends_with(".rs") || 
+        name_lower.ends_with(".py") || 
+        name_lower.contains("— cursor") ||
+        name_lower.contains("- cursor")
+    ) {
         return "Cursor IDE".to_string();
     }
 
+    // Priority 2: Check WM_CLASS (for standard X11 apps)
     if class_lower.contains("code") || class_lower.contains("vscodium") {
-        "VS Code".to_string()
-    } else if class_lower.contains("chrome") || class_lower.contains("chromium") {
+        return "VS Code".to_string();
+    }
+    
+    if class_lower.contains("chrome") || class_lower.contains("chromium") {
         if name_lower.contains("figma") {
-            "Figma (Chrome)".to_string()
+            return "Figma (Chrome)".to_string();
         } else {
-            "Google Chrome".to_string()
+            return "Google Chrome".to_string();
         }
-    } else if class_lower.contains("msedge") || class_lower.contains("microsoft-edge") || name_lower.contains("microsoft edge") {
-        "Microsoft Edge".to_string()
-    } else if class_lower.contains("firefox") {
-        "Firefox".to_string()
-    } else if class_lower.contains("figma") {
-        "Figma".to_string()
-    } else if class_lower.contains("postman") {
-        "Postman".to_string()
-    } else if class_lower.contains("libreoffice") || class_lower.contains("soffice")
+    }
+    
+    if class_lower.contains("msedge") || class_lower.contains("microsoft-edge") || name_lower.contains("microsoft edge") {
+        return "Microsoft Edge".to_string();
+    }
+    
+    if class_lower.contains("firefox") {
+        return "Firefox".to_string();
+    }
+    
+    if class_lower.contains("figma") {
+        return "Figma".to_string();
+    }
+    
+    if class_lower.contains("postman") {
+        return "Postman".to_string();
+    }
+    
+    if class_lower.contains("libreoffice") || class_lower.contains("soffice")
         || class_lower.contains("wps") || class_lower.contains("word")
         || class_lower.contains("excel") || class_lower.contains("powerpnt")
     {
-        "LibreOffice".to_string()
-    } else if class_lower.contains("terminal") || class_lower.contains("gnome-terminal")
+        return "LibreOffice".to_string();
+    }
+    
+    if class_lower.contains("terminal") || class_lower.contains("gnome-terminal")
         || class_lower.contains("kitty") || class_lower.contains("alacritty")
         || class_lower.contains("konsole") || class_lower.contains("xterm")
         || class_lower.contains("tilix") || class_lower.contains("warp")
+        || class_lower.contains("terminator")
     {
-        "Terminal".to_string()
-    } else if class_lower.contains("docker") {
-        "Docker Desktop".to_string()
-    } else if class_lower.contains("gedit") || class_lower.contains("mousepad")
+        return "Terminal".to_string();
+    }
+    
+    if class_lower.contains("docker") {
+        return "Docker Desktop".to_string();
+    }
+    
+    if class_lower.contains("gedit") || class_lower.contains("mousepad")
         || class_lower.contains("notepad") || class_lower.contains("leafpad")
         || class_lower.contains("kate") || class_lower.contains("sublime")
         || class_lower.contains("pluma") || class_lower.contains("xed")
         || name_lower.contains("notepad") || name_lower.contains("text editor")
     {
-        "Penyunting Teks (Notepad)".to_string()
-    } else if !wm_class.is_empty() {
+        return "Penyunting Teks (Notepad)".to_string();
+    }
+    
+    // Fallback: return WM_CLASS if not empty, otherwise Unknown
+    if !wm_class.is_empty() {
         wm_class.to_string()
     } else {
         "Unknown".to_string()
@@ -1298,6 +1371,7 @@ fn capture_git_snapshot(project_dir: &str) -> Option<ActivityRecord> {
         .find_map(|(n, label)| if label.contains("deletion") { n.parse().ok() } else { None })
         .unwrap_or(0);
 
+    // Get changed files with detailed git status
     let changed_files: Vec<String> = status_str
         .lines()
         .filter(|l| !l.is_empty() && l.len() >= 3)
@@ -1316,10 +1390,31 @@ fn capture_git_snapshot(project_dir: &str) -> Option<ActivityRecord> {
         })
         .collect();
 
-    let summary = if insertions > 0 || deletions > 0 {
-        format!("+{} baris ditambah, -{} baris dihapus ({} file)", insertions, deletions, changed_files.len())
-    } else {
-        format!("{} berkas berubah (Git)", changed_files.len())
+    // Get more detailed stats using git diff-index for tracked files
+    let diff_index_output = Command::new("git")
+        .args(["-C", project_dir, "diff-index", "--cached", "HEAD"])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+
+    // Also get untracked files specifically
+    let untracked_output = Command::new("git")
+        .args(["-C", project_dir, "ls-files", "--others", "--exclude-standard"])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+
+    let untracked_count = untracked_output.lines().count() as u32;
+
+    // Build a comprehensive summary
+    let total_changes = changed_files.len();
+    let summary = match (insertions, deletions, untracked_count, total_changes) {
+        (0, 0, 0, _) => "Tidak ada perubahan Git".to_string(),
+        (0, 0, n, _) if n > 0 => format!("{} file baru (belum tracked)", n),
+        (i, d, 0, _) => format!("+{} baris ditambah, -{} baris dihapus ({} file)", i, d, total_changes),
+        (i, d, n, _) => format!("+{} baris, -{} baris, {} file baru ({} total)", i, d, n, total_changes),
     };
 
     Some(ActivityRecord {
@@ -1339,10 +1434,13 @@ fn capture_git_snapshot(project_dir: &str) -> Option<ActivityRecord> {
         duration_ms: 0,
         details: Some(serde_json::json!({
             "changed_files": changed_files,
+            "untracked_files": untracked_output.lines().collect::<Vec<_>>(),
+            "untracked_count": untracked_count,
             "insertions": insertions,
             "deletions": deletions,
             "shortstat": shortstat,
             "staged_stat": staged_stat,
+            "diff_index": diff_index_output,
             "status_raw": status_str
         })),
     })
@@ -1355,9 +1453,14 @@ fn start_recording(
     state: tauri::State<'_, Arc<TelemetryEngine>>,
     mode: String,
     project_dir: String,
+    session_id: Option<String>,
     existing_activities: Option<Vec<ActivityRecord>>,
     existing_cognitive_signals: Option<CognitiveSignals>,
 ) -> Result<String, String> {
+    // Set the active session ID to prevent multiple concurrent sessions
+    if let Some(sid) = session_id.clone() {
+        *state.active_session_id.lock().unwrap() = Some(sid);
+    }
     state.start(mode.clone(), project_dir, existing_activities, existing_cognitive_signals);
     Ok(format!("Recording started in {} mode", mode))
 }
@@ -1366,6 +1469,8 @@ fn start_recording(
 fn stop_recording(
     state: tauri::State<'_, Arc<TelemetryEngine>>,
 ) -> Result<Vec<ActivityRecord>, String> {
+    // Clear the active session ID
+    *state.active_session_id.lock().unwrap() = None;
     let activities = state.stop().unwrap_or_default();
     Ok(activities)
 }
@@ -1383,6 +1488,13 @@ fn get_live_activities(
     offset: usize,
 ) -> Result<Vec<ActivityRecord>, String> {
     Ok(state.get_activities(offset))
+}
+
+#[tauri::command]
+fn get_active_session_id(
+    state: tauri::State<'_, Arc<TelemetryEngine>>,
+) -> Result<Option<String>, String> {
+    Ok(state.get_active_session_id())
 }
 
 #[tauri::command]
@@ -1587,6 +1699,7 @@ pub fn run() {
             stop_recording,
             get_recording_status,
             get_live_activities,
+            get_active_session_id,
             save_session_file,
             load_all_sessions,
             delete_session_file,

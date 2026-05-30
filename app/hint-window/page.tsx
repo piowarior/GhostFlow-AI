@@ -82,14 +82,22 @@ export default function HintWindow() {
         if (isExpanded) {
           const newW = 320;
           const newH = 420;
-          await win.setSize(new PhysicalSize(newW, newH));
-          await win.setPosition(new PhysicalPosition(screenW - newW - 16, Math.floor(screenH / 2) - Math.floor(newH / 2)));
+          // Set size first, then position to avoid issues
+          await Promise.all([
+            win.setSize(new PhysicalSize(newW, newH)),
+            win.setPosition(new PhysicalPosition(screenW - newW - 16, Math.floor(screenH / 2) - Math.floor(newH / 2)))
+          ]);
         } else {
-          await win.setSize(new PhysicalSize(64, 64));
-          await win.setPosition(new PhysicalPosition(screenW - 80, Math.floor(screenH / 2) - 32));
+          await Promise.all([
+            win.setSize(new PhysicalSize(64, 64)),
+            win.setPosition(new PhysicalPosition(screenW - 80, Math.floor(screenH / 2) - 32))
+          ]);
         }
       } catch (e) {
-        console.error('Resize failed:', e);
+        // Silently fail to avoid console errors - position/size updates are non-critical
+        if (typeof e === 'string' && !e.includes('current_monitor')) {
+          console.debug('Window resize hint:', e);
+        }
       }
     };
     resizeWindow();

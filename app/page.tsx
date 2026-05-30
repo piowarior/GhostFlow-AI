@@ -22,38 +22,151 @@ function renderMarkdown(text: string): React.ReactNode {
   const lines = text.split('\n');
   const renderedElements: React.ReactNode[] = [];
   let currentParagraphLines: string[] = [];
+  let inCodeBlock = false;
+  let codeBlockContent: string[] = [];
 
   const flushParagraph = (key: string) => {
     if (currentParagraphLines.length > 0) {
       const pText = currentParagraphLines.join(' ');
-      renderedElements.push(
-        <p key={key} className="mb-2 last:mb-0 leading-relaxed text-zinc-300">
-          {parseInlineMarkdown(pText)}
-        </p>
-      );
+      if (pText.trim()) {
+        renderedElements.push(
+          <p key={key} className="mb-3 last:mb-0 leading-relaxed text-zinc-300">
+            {parseInlineMarkdown(pText)}
+          </p>
+        );
+      }
       currentParagraphLines = [];
     }
   };
 
+  const flushCodeBlock = (key: string) => {
+    if (codeBlockContent.length > 0) {
+      const code = codeBlockContent.join('\n');
+      renderedElements.push(
+        <pre key={key} className="bg-black/40 border border-white/5 rounded-lg p-3 overflow-x-auto mb-3 text-teal-400 text-[11px] font-mono leading-relaxed">
+          <code>{code}</code>
+        </pre>
+      );
+      codeBlockContent = [];
+    }
+  };
+
   const parseInlineMarkdown = (inlineText: string): React.ReactNode[] => {
-    const parts = inlineText.split(/\*\*([\s\S]*?)\*\*/g);
-    return parts.map((part, index) => {
-      if (index % 2 === 1) {
-        return <strong key={index} className="font-extrabold text-white text-shadow-sm">{part}</strong>;
+    const parts: React.ReactNode[] = [];
+    let remaining = inlineText;
+    let index = 0;
+
+    while (remaining.length > 0) {
+      // Bold with **text**
+      const boldMatch = remaining.match(/\*\*([\s\S]*?)\*\*/);
+      if (boldMatch && boldMatch.index === 0) {
+        parts.push(
+          <strong key={`b-${index++}`} className="font-bold text-white text-shadow-sm">
+            {boldMatch[1]}
+          </strong>
+        );
+        remaining = remaining.slice(boldMatch[0].length);
+        continue;
       }
-      const codeParts = part.split(/`([\s\S]*?)`/g);
-      return codeParts.map((subPart, subIdx) => {
-        if (subIdx % 2 === 1) {
-          return <code key={subIdx} className="bg-black/40 border border-white/5 rounded px-1.5 py-0.5 font-mono text-teal-400 text-[11px]">{subPart}</code>;
-        }
-        return subPart;
-      });
-    });
+
+      // Italic with *text* or _text_
+      const italicMatch = remaining.match(/[*_]([\s\S]*?)[*_]/);
+      if (italicMatch && italicMatch.index === 0) {
+        parts.push(
+          <em key={`i-${index++}`} className="italic text-zinc-200">
+            {italicMatch[1]}
+          </em>
+        );
+        remaining = remaining.slice(italicMatch[0].length);
+        continue;
+      }
+
+      // Inline code with `text`
+      const codeMatch = remaining.match(/`([\s\S]*?)`/);
+      if (codeMatch && codeMatch.index === 0) {
+        parts.push(
+          <code key={`c-${index++}`} className="bg-black/40 border border-white/5 rounded px-1.5 py-0.5 font-mono text-teal-400 text-[10px]">
+            {codeMatch[1]}
+          </code>
+        );
+        remaining = remaining.slice(codeMatch[0].length);
+        continue;
+      }
+
+      // Emoji + text patterns
+      const emojiMatch = remaining.match(/^([🔴🟢🟡⚙️✅❌📊📈🎯🚀💡⭐🔗])\s*/);
+      if (emojiMatch) {
+        parts.push(
+          <span key={`e-${index++}`} className="mr-1">
+            {emojiMatch[1]}
+          </span>
+        );
+        remaining = remaining.slice(emojiMatch[0].length);
+        continue;
+      }
+
+      // Regular text up to next special character
+      const nextSpecial = Math.min(
+        remaining.indexOf('**') === -1 ? Infinity : remaining.indexOf('**'),
+        remaining.indexOf('*') === -1 ? Infinity : remaining.indexOf('*'),
+        remaining.indexOf('`') === -1 ? Infinity : remaining.indexOf('`'),
+        remaining.indexOf('_') === -1 ? Infinity : remaining.indexOf('_')
+      );
+
+      if (nextSpecial === Infinity) {
+        parts.push(remaining);
+        break;
+      } else {
+        parts.push(remaining.slice(0, nextSpecial));
+        remaining = remaining.slice(nextSpecial);
+      }
+    }
+
+    return parts;
   };
 
   lines.forEach((line, index) => {
     const trimmed = line.trim();
 
+    // Code block delimiters
+    if (trimmed.startsWith('```')) {
+      flushParagraph(`p-${index}-before`);
+      if (inCodeBlock) {
+        flushCodeBlock(`cb-${index}`);
+        inCodeBlock = false;
+      } else {
+        inCodeBlock = true;
+      }
+      return;
+    }
+
+    if (inCodeBlock) {
+      codeBlockContent.push(line);
+      return;
+    }
+
+    // Headings
+    if (trimmed.startsWith('# ')) {
+      flushParagraph(`p-${index}`);
+      renderedElements.push(
+        <h2 key={`h2-${index}`} className="text-lg font-bold text-white mb-3 mt-2">
+          {parseInlineMarkdown(trimmed.substring(2).trim())}
+        </h2>
+      );
+      return;
+    }
+
+    if (trimmed.startsWith('## ')) {
+      flushParagraph(`p-${index}`);
+      renderedElements.push(
+        <h3 key={`h3-${index}`} className="text-base font-bold text-zinc-100 mb-2 mt-1">
+          {parseInlineMarkdown(trimmed.substring(3).trim())}
+        </h3>
+      );
+      return;
+    }
+
+    // Lists
     if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
       flushParagraph(`p-${index}`);
       const content = trimmed.substring(2);
@@ -62,8 +175,10 @@ function renderMarkdown(text: string): React.ReactNode {
           {parseInlineMarkdown(content)}
         </li>
       );
-    } 
-    else if (/^\d+\.\s/.test(trimmed)) {
+      return;
+    }
+
+    if (/^\d+\.\s/.test(trimmed)) {
       flushParagraph(`p-${index}`);
       const dotIndex = trimmed.indexOf('.');
       const content = trimmed.substring(dotIndex + 1).trim();
@@ -72,18 +187,23 @@ function renderMarkdown(text: string): React.ReactNode {
           {parseInlineMarkdown(content)}
         </li>
       );
+      return;
     }
-    else if (trimmed === '') {
+
+    // Empty line
+    if (trimmed === '') {
       flushParagraph(`p-${index}`);
-    } 
-    else {
-      currentParagraphLines.push(trimmed);
+      return;
     }
+
+    // Regular paragraph
+    currentParagraphLines.push(trimmed);
   });
 
   flushParagraph(`p-final`);
+  flushCodeBlock('cb-final');
 
-  return <div className="space-y-0.5">{renderedElements}</div>;
+  return <div className="space-y-1">{renderedElements}</div>;
 }
 
 type TimelineActivity = {
@@ -358,6 +478,20 @@ export default function GhostFlowDashboard() {
     }
     return () => clearInterval(interval);
   }, [isRecording, inTauri, selectedSessionId]);
+
+  // --- Auto-save session data every 3 seconds during recording ---
+  useEffect(() => {
+    let saveInterval: NodeJS.Timeout;
+    if (isRecording && selectedSessionId) {
+      saveInterval = setInterval(() => {
+        const currentSession = sessions.find(s => s.id === selectedSessionId);
+        if (currentSession) {
+          saveSessionToDisk(currentSession);
+        }
+      }, 3000);
+    }
+    return () => clearInterval(saveInterval);
+  }, [isRecording, selectedSessionId, sessions]);
 
   const loadAllSessionsFromFileSystem = async () => {
     try {
@@ -772,10 +906,11 @@ export default function GhostFlowDashboard() {
           text: `Pencatatan dihentikan. Seluruh log aktivitas Anda berhasil disimpan di ~/GhostFlow_Data/${currentSession.title.toLowerCase().replace(/[^a-z0-str]/g, '_')}.json`
         }]);
       } else {
-        // START
+        // START - Include session_id to prevent multiple concurrent recordings
         await invoke('start_recording', {
           mode: currentSession.mode,
           projectDir: currentSession.project_dir,
+          sessionId: selectedSessionId,
           existingActivities: currentSession.activities.length > 0 ? currentSession.activities : null,
           existingCognitiveSignals: currentSession.cognitive_signals ? currentSession.cognitive_signals : null
         });
@@ -1108,12 +1243,19 @@ Tugas Anda adalah menjawab pertanyaan user berdasarkan log aktivitas kognitif ex
                       </div>
 
                       <div className="flex items-center justify-between mb-2 pr-14">
-                        <span className={`text-[9px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider ${s.mode === 'expert'
-                            ? 'bg-teal-500/10 text-teal-400 border-teal-500/20'
-                            : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
-                          }`}>
-                          {s.mode}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className={`text-[9px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider ${s.mode === 'expert'
+                              ? 'bg-teal-500/10 text-teal-400 border-teal-500/20'
+                              : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
+                            }`}>
+                            {s.mode}
+                          </span>
+                          {isRecording && selectedSessionId === s.id && (
+                            <span className="text-[8px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider bg-red-500/10 text-red-400 border-red-500/20 animate-pulse flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 bg-red-500 rounded-full"></span> REC
+                            </span>
+                          )}
+                        </div>
                         <span className="text-[10px] text-zinc-500 font-mono">
                           {formatTime(s.duration_seconds)}
                         </span>
