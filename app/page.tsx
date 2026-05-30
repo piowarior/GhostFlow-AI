@@ -117,7 +117,7 @@ export default function GhostFlowDashboard() {
     { role: 'assistant', text: 'Halo Expert! Saya Ghost Cognitive Mentor. Rekam sesi Anda dan ekspor ke Junior Developer.' }
   ]);
   const [chatInput, setChatInput] = useState('');
-  const [geminiKey, setGeminiKey] = useState('AIzaSyBtW1yD5QoFQJFDyRtvFP12TqveaXRnR7M');
+  const [geminiKey, setGeminiKey] = useState(process.env.NEXT_PUBLIC_GEMINI_API_KEY || '');
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const profileRef = useRef<HTMLDivElement>(null);
 
@@ -153,9 +153,11 @@ export default function GhostFlowDashboard() {
   // --- Initialize & Load from File System ---
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const savedKey = localStorage.getItem('ghostflow_gemini_key') || 'AIzaSyBtW1yD5QoFQJFDyRtvFP12TqveaXRnR7M';
+      const savedKey = localStorage.getItem('ghostflow_gemini_key') || process.env.NEXT_PUBLIC_GEMINI_API_KEY || '';
       setGeminiKey(savedKey);
-      localStorage.setItem('ghostflow_gemini_key', savedKey);
+      if (savedKey) {
+        localStorage.setItem('ghostflow_gemini_key', savedKey);
+      }
     }
     if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
       setInTauri(true);
